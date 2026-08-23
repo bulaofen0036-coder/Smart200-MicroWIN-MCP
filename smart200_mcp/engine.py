@@ -104,7 +104,10 @@ def launch_instance(project_path, timeout=90):
     try:
         wait_ready(p.pid, project_path, timeout=timeout)
     except EngineError:
-        if p.poll() is not None:
+        # 等不到就绪必须把自己起的进程收掉，否则每失败一次就漏一个实例在后台
+        died = p.poll() is not None
+        kill_instance(p.pid)
+        if died:
             raise EngineError(f"实例启动后立即退出：{project_path}")
         raise
     return p.pid
