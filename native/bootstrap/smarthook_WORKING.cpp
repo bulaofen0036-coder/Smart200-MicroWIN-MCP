@@ -207,6 +207,63 @@ static void DoWork() {
                     int r=save(gR); Log("script SAVE ret=%d", r);
                 } else if(strcmp(ln,"SAVEAS")==0){
                     CStr p(arg); int r=saveas(gR,p.obj()); Log("script SAVEAS '%s' ret=%d", U8(arg).c(), r);
+                } else if(strcmp(ln,"SYMADD")==0){
+                    // "名字|地址|注释"：先向引擎【要一个变量表句柄】，再往里插符号。
+                    // 卡点一直是拿不到表的 MW_ID —— 这两个 Create* 就是专门发句柄的。
+                    typedef int (__thiscall *MkTab)(void*, unsigned char*);
+                    typedef int (__thiscall *InsSym)(void*, const unsigned char*, unsigned short, void*, void*, void*, int);
+                    MkTab mkU=(MkTab)Sym("?GLBVAR_CreateUndefinedVariableTable@MWStore@@QAEJAAVMW_ID@@@Z");
+                    MkTab mkI=(MkTab)Sym("?GLBVAR_CreateIOVariableTable@MWStore@@QAEJAAVMW_ID@@@Z");
+                    InsSym ins=(InsSym)Sym("?SYM_InsertSymbol@MWStore@@QAEJABVMW_ID@@GABV?$CStringT@DV?$StrTraitMFC_DLL@DV?$ChTraitsCRT@D@ATL@@@@@ATL@@11H@Z");
+                    Log("script SYMADD api mkU=%p mkI=%p ins=%p", mkU, mkI, ins);
+                    unsigned char id[16]={0}; int mr=-1; const char* which="none";
+                    if(mkU){ mr=mkU(gS,id); which="Undefined"; }
+                    bool zero=true; for(int k=0;k<16;k++) if(id[k]){ zero=false; break; }
+                    if(zero && mkI){ memset(id,0,16); mr=mkI(gS,id); which="IO"; 
+                        zero=true; for(int k=0;k<16;k++) if(id[k]){ zero=false; break; } }
+                    char hx[40]; for(int k=0;k<16;k++) sprintf_s(hx+k*2,3,"%02x",id[k]);
+                    Log("script SYMADD table(%s) ret=%d id=%s", which, mr, hx);
+                    if(!zero && ins){
+                        char* b1=strchr(arg,'|');
+                        if(b1){ *b1=0; char* nm=arg; char* rest=b1+1;
+                            char* b2=strchr(rest,'|'); char* ad=rest; char* cm=(char*)"";
+                            if(b2){ *b2=0; cm=b2+1; }
+                            CStr cn(nm), ca(ad), cc(cm);
+                            int r=ins(gS, id, 0, cn.obj(), ca.obj(), cc.obj(), 0);
+                            Log("script SYMADD '%s'=%s ret=%d", U8(nm).c(), U8(ad).c(), r);
+                        }
+                    }
+                } else if(strcmp(ln,"IMPORTGVT")==0){
+                    // 导入全局变量表(符号表)二进制。路径是 char* 不是 CString。
+                    typedef int (__thiscall *ImpGvt)(void*, const char*, const unsigned char*);
+                    ImpGvt ig=(ImpGvt)Sym("?GLBVAR_ImportBinaryVariableTable@MWRetrieve@@QAEJPBDABVMW_ID@@@Z");
+                    if(!ig){ Log("script IMPORTGVT ERR=无 API"); }
+                    else {
+                        unsigned char id[16]={0};
+                        int r=ig(gR, arg, id);
+                        Log("script IMPORTGVT '%s' ret=%d", U8(arg).c(), r);
+                    }
+                } else if(strcmp(ln,"EXPORTGVT")==0){
+                    // 导出全局变量表(=符号表)。"名字|路径"；名字写 * 表示用全零 MW_ID 试。
+                    typedef int (__thiscall *ExpGvt)(void*, const unsigned char*, void*);
+                    ExpGvt eg=(ExpGvt)Sym("?PRJ_ExportGVT@MWRetrieve@@QBEJABVMW_ID@@ABV?$CStringT@DV?$StrTraitMFC_DLL@DV?$ChTraitsCRT@D@ATL@@@@@ATL@@@Z");
+                    ExpGvt eg1=(ExpGvt)Sym("?PRJ_ExportSingleGVT@MWRetrieve@@QBEJABVMW_ID@@ABV?$CStringT@DV?$StrTraitMFC_DLL@DV?$ChTraitsCRT@D@ATL@@@@@ATL@@@Z");
+                    char* bar=strchr(arg,'|');
+                    if(!bar || !eg){ Log("script EXPORTGVT ERR=缺| 或无 API eg=%p eg1=%p", eg, eg1); }
+                    else {
+                        *bar=0; char* nm=arg; char* op=bar+1;
+                        unsigned char id[16]={0};
+                        int fr=0;
+                        if(strcmp(nm,"*")!=0 && find){ CStr c(nm); fr=find(gR,c.obj(),id); }
+                        char hx[40]; for(int k=0;k<16;k++) sprintf_s(hx+k*2,3,"%02x",id[k]);
+                        CStr p1(op); int r=eg(gR,id,p1.obj());
+                        Log("script EXPORTGVT '%s' find=%d id=%s -> %s ret=%d", U8(nm).c(), fr, hx, U8(op).c(), r);
+                        if(r!=0 && eg1){
+                            char op2[600]; sprintf_s(op2,"%s.single", op);
+                            CStr p2(op2); int r2=eg1(gR,id,p2.obj());
+                            Log("script EXPORTGVT '%s' SingleGVT ret=%d", U8(nm).c(), r2);
+                        }
+                    }
                 } else if(strcmp(ln,"SYMFIND")==0){
                     // 探路：按符号名查它所在的符号表 MW_ID 与行号
                     typedef int (__thiscall *FindSym)(void*, void*, unsigned char*, unsigned short*);

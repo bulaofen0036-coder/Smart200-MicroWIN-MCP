@@ -36,3 +36,4 @@ samples/blank_template.smart*
 samples/_rt_*.awl
 native/bootstrap/*.dll.bak
 samples/*.ERR
+samples/_symfmt/

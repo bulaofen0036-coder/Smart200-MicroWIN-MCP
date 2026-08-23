@@ -113,9 +113,12 @@ python tests/test_enginelog.py  # 引擎日志判据防回归
 
 ## 已知边界
 
-- **建不了符号表**：`SYM_InsertSymbol` 等 API 都在，但 `SYM_FindSymbol` 恒返错、
-  表 MW_ID 全零，拿不到符号表句柄；`.sdf` 走 `PRJ_Import` 也被拒。
-  → 生成的程序目前只能用**绝对地址**；读已有工程时符号名是正常带出来的。
+- **建不了符号表**（生成的程序只能用**绝对地址**；读已有工程时符号名正常带出来）。
+  已排除的错路见 docs/ENGINE_INJECTION.md「符号表探路记录」：`PRJ_Import` 是 AWL 导入器、
+  不管符号表（任何符号表文本都在第一个 token 报错）；扩展名是 `.sym` 不是 `.sdf`，但换了也没用。
+  能用的部分：`PRJ_ExportGVT` **传全零 MW_ID 就能导出整张符号表**（但是二进制，编辑不了）。
+  卡点：导入必须要真实的表 MW_ID。已能用 `GLBVAR_CreateUndefinedVariableTable` 拿到一个非零句柄，
+  但 `SYM_InsertSymbol` 仍返 `0xA00007DA` —— 多半那张不是该写入的表。
 - **枚举不了工程里有哪些块**：`POU_GetCount` 按 MW_IDType 枚举恒返 0，只能按名字查。
   想知道有哪些块得走 UI 层 `smart_ui_project_tree`。
 - 下载到 PLC 未打通（`PRJ_Download` 未接线，snap7 层未经真机验证）

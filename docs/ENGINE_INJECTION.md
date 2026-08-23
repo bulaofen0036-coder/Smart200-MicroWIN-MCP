@@ -169,3 +169,60 @@ long __thiscall MWRetrieve::POU_IsValidNet(MW_ID const&, unsigned short net,
 下一步应该是拿 dbgcap 挂在软件的"符号表"界面动作上，抓真实的 MW_ID 与调用顺序。
 
 附带确认：**未定义的符号名不会让编译报错，而是让整个网络变成无效程序段** —— 第 3 关抓得到。
+
+## 符号表探路记录（2026-08-23，未拿下但排除了大量错路）
+
+结论先说：**目前建不了符号，生成的程序只能用绝对地址**。以下是已排除的路和卡点，
+省得下次重走。
+
+### 已排除：`PRJ_Import` 不管符号表
+
+它是 **AWL 导入器**。喂任何符号表文本都在**第一个 token** 就报错：
+
+| 试的格式 | 报错 |
+|---|---|
+| 带引号 CSV（有/无表头，中英文）| `Syntax error at token: "Motor_Start"` |
+| 裸 CSV / 分号 / 空格 / TAB 分隔 | `Syntax error at token: Motor_Start` |
+| 自造 `SYMBOL_TABLE ... END_SYMBOL_TABLE` | `Syntax error at token: SYMBOL_TABLE` |
+
+**有用的副产品**：导入失败时软件会在旁边生成 `<原文件>.ERR`，里面写着卡在哪个 token —— 
+这是个免费的语法反馈回路，试格式时先看它，别盲猜。
+
+引擎 DLL 的语法关键字表里根本没有 SYMBOL 相关词（有 `DATA_BLOCK_TAB`/`END_DATA_BLOCK_TAB`、
+`ORGANIZATION_BLOCK`、`VAR_*` 等），所以此路不通是结构性的，不是语法没猜对。
+
+### 已确认：扩展名是 `.sym` 不是 `.sdf`
+
+资源 DLL 里的文件过滤器写着 `Symbol Tables (*.sym)|*.sym||`。但换扩展名不解决问题
+（见上表，`PRJ_Import` 照样在第一个 token 报错）。
+
+### 能用的部分：`PRJ_ExportGVT` 导得出整张符号表
+
+符号表在引擎里叫 **GVT（全局变量表）**。
+`?PRJ_ExportGVT@MWRetrieve@@QBEJABVMW_ID@@ABV?$CStringT...@Z`，签名与已跑通的 
+`PRJ_ExportXML` 同款，而且 **MW_ID 传全零就能导出**（ret=0，空模板导出 29224 B）。
+→ 已实现为 script 命令 `EXPORTGVT 名字|路径`（名字写 `*` 用全零 id）。
+
+但导出的是**二进制**（可打印字符仅 38.9%），编辑不了，所以只能整表搬运、不能编写内容。
+
+### 卡点：导入要真实的表 MW_ID
+
+`GLBVAR_ImportBinaryVariableTable(char const*, MW_ID const&)` 传全零 id 返 `0xA000177E`。
+**同一个工程自导自入也是同样的错** —— 所以问题是"导入不接受全零 id"，
+不是跨工程或跨版本不兼容（这一步排除得很关键，否则会往错方向修）。
+
+拿句柄的进展：`GLBVAR_CreateUndefinedVariableTable(MW_ID&)` **能返回一个非全零 id**
+（`00000000ac0d00000000000001000000`，ret=6010，多次调用稳定返回同一个）。
+这是第一次拿到真实表句柄 —— 此前 `SYM_FindSymbol` 一直返错且 id 全零。
+
+但 `SYM_InsertSymbol(id, row=0, 名, 地址, 注释, 0)` 仍返 `0xA00007DA`。推测原因：
+**"未定义符号表"不是该写入的那张表**（它是树里"未定义符号"那栏），
+或者 row 不是 0 起。下一步应该是找/造"用户符号表"，并摸清 row 与最后那个 int 标志的语义。
+
+### 附带确认
+
+**未定义的符号名不会让编译报错，而是让整个网络变成无效程序段** —— 第 3 关抓得到。
+所以即使符号功能没打通，写错符号名也不会静默溜过去。
+
+以上探路命令（`SYMFIND`/`EXPORTGVT`/`IMPORTGVT`/`SYMADD`）都留在 hook 里，
+**属实验性质，没接进 MCP 工具**，只能用 `smart_run_workflow` 手动调。
