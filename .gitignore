@@ -1,0 +1,32 @@
+# ---- 客户数据：绝不入库 ----
+samples/*.smart
+samples/*.smartV3
+samples/auto_exported_SBR0.awl
+samples/manual_exported_1212.awl
+samples/ref_for.awl
+samples/*_pid.txt
+
+# ---- 构建中间产物 ----
+__pycache__/
+*.pyc
+native/*/obj/
+native/*/bin/
+*.obj
+*.exp
+*.lib
+*.pdb
+
+# 只保留运行必需的两个二进制（见 .gitignore 末尾的反排除）
+native/bootstrap/*.dll
+native/bootstrap/*.txt
+
+# ---- 反排除：运行时真正需要的产物 ----
+!native/bootstrap/smarthook_WORKING.dll
+!native/injector/bin/
+native/injector/bin/**
+!native/injector/bin/Release/net8.0/win-x86/injector.exe
+!native/injector/bin/Release/net8.0/win-x86/injector.dll
+!native/injector/bin/Release/net8.0/win-x86/injector.runtimeconfig.json
+!native/injector/bin/Release/net8.0/win-x86/injector.deps.json
+.smart200_local.json
+native/dbgcap/capture.log

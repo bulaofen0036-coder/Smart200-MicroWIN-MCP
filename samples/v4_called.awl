@@ -1,0 +1,8 @@
+SUBROUTINE_BLOCK 被调用示例:SBR22
+TITLE=供 CALL 指令调用的子程序
+BEGIN
+Network 1
+//被调用时执行：计数
+	LD     SM0.0
+	INCW   VW910
+END_SUBROUTINE_BLOCK

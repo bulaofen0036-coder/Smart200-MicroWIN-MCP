@@ -1,0 +1,146 @@
+SUBROUTINE_BLOCK 指令进阶示例:SBR21
+TITLE=S7-200 SMART 进阶指令（双字逻辑/数学函数/表格/转换/通信/中断）
+BEGIN
+Network 1
+//双字逻辑：ANDD与 ORD或 XORD异或 INVD取反
+	LD     SM0.0
+	ANDD   16#0000FFFF, VD300
+	ORD    16#FFFF0000, VD300
+	XORD   16#FFFFFFFF, VD300
+	INVD   VD300
+Network 2
+//双字移位：SLD左移 SRD右移
+	LD     SM0.0
+	SLD    VD304, 4
+	SRD    VD304, 2
+Network 3
+//双字循环移位：RLD左循环 RRD右循环
+	LD     SM0.0
+	RLD    VD308, 1
+	RRD    VD308, 1
+Network 4
+//比较：字不等于 LDW<>
+	LDW<>  VW310, +100
+	=      Q5.0
+Network 5
+//比较：字小于等于 LDW<=
+	LDW<=  VW310, +200
+	=      Q5.1
+Network 6
+//比较：字大于等于 LDW>=
+	LDW>=  VW310, +50
+	=      Q5.2
+Network 7
+//比较：双字等于 LDD=
+	LDD=   VD312, +1000
+	=      Q5.3
+Network 8
+//比较：双字大于 LDD>
+	LDD>   VD312, +500
+	=      Q5.4
+Network 9
+//比较：字节等于 LDB=
+	LDB=   VB316, 16#0A
+	=      Q5.5
+Network 10
+//比较：实数大于 LDR>
+	LDR>   VD320, 3.14
+	=      Q5.6
+Network 11
+//数学函数：SIN正弦 COS余弦 TAN正切（输入为弧度）
+	LD     SM0.0
+	SIN    VD330, VD334
+	COS    VD330, VD338
+	TAN    VD330, VD342
+Network 12
+//数学函数：LN自然对数 EXP指数
+	LD     SM0.0
+	LN     VD350, VD354
+	EXP    VD354, VD358
+Network 13
+//七段码 SEG：把数字转成数码管段码
+	LD     SM0.0
+	SEG    VB360, VB361
+Network 14
+//ASCII与十六进制互转：ATH（ASCII→HEX）HTA（HEX→ASCII）
+	LD     SM0.0
+	ATH    VB370, VB380, 4
+	HTA    VB380, VB390, 2
+Network 15
+//块传送：BMB字节块 BMW字块 BMD双字块（N=个数）
+	LD     SM0.0
+	BMB    VB400, VB420, 10
+	BMW    VW440, VW460, 5
+	BMD    VD480, VD500, 3
+Network 16
+//字节交换 SWAP：交换字的高低字节
+	LD     SM0.0
+	SWAP   VW520
+Network 17
+//存储器填充 FILL：把 IN 填充到 OUT 起 N 个字
+	LD     SM0.0
+	FILL   +0, VW530, 10
+Network 18
+//表格：ATT 把数据加入表尾
+	LD     I8.0
+	ATT    VW550, VW600
+Network 19
+//表格：LIFO 后进先出取数
+	LD     I8.1
+	LIFO   VW600, VW560
+Network 20
+//表格：FIFO 先进先出取数
+	LD     I8.2
+	FIFO   VW600, VW562
+Network 21
+//数据转换：DTI 双整数→整数
+	LD     SM0.0
+	DTI    VD570, VW574
+Network 22
+//数据转换：ROUND/TRUNC 已在基础篇；这里演示 ITD+DTR 组合做模拟量标定
+	LD     SM0.0
+	ITD    VW576, VD578
+	DTR    VD578, VD582
+Network 23
+//实时时钟：TODR 读时钟 TODW 写时钟（8字节缓冲区）
+	LD     I9.0
+	TODR   VB700
+Network 24
+//实时时钟：写入
+	LD     I9.1
+	TODW   VB710
+Network 25
+//中断：ENI 允许全局中断
+	LD     SM0.1
+	ENI
+Network 26
+//中断：DISI 禁止全局中断
+	LD     I9.2
+	DISI
+Network 27
+//中断：ATCH 关联中断程序（INT_0 关联到事件 0=I0.0上升沿）
+	LD     SM0.1
+	ATCH   INT_0, 0
+Network 28
+//中断：DTCH 分离中断事件
+	LD     I9.3
+	DTCH   0
+Network 29
+//看门狗复位 WDR：扫描时间长时喂狗
+	LD     I9.4
+	WDR
+Network 30
+//子程序调用 CALL
+	LD     I9.5
+	CALL   SBR_0
+END_SUBROUTINE_BLOCK
+
+INTERRUPT_BLOCK INT_0:INT0
+TITLE=中断服务程序示例
+BEGIN
+Network 1
+//中断里做快速处理：计数并传送
+	LD     SM0.0
+	INCD   VD900
+	MOVW   VW902, VW904
+END_INTERRUPT_BLOCK

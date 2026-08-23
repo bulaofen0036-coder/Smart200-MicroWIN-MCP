@@ -1,0 +1,343 @@
+SUBROUTINE_BLOCK 指令大全示例:SBR1
+TITLE=S7-200 SMART 常用指令学习示例（经软件编译验证）
+BEGIN
+Network 1 
+//位逻辑：LD装载 / A与 / O或 / AN与非 / ON或非 / =输出
+	
+	
+	
+	
+	
+	
+	LD     CPU_输入0
+	A      CPU_输入1
+	AN     CPU_输入2
+	O      CPU_输入3
+	ON     CPU_输入4
+	=      CPU_输出0
+Network 2 
+//置位/复位/立即：S置位 / R复位 / SI立即置位 / RI立即复位
+	
+	
+	
+	
+	
+	
+	
+	LD     CPU_输入5
+	S      CPU_输出1, 3
+	LD     CPU_输入6
+	R      CPU_输出1, 3
+	LD     CPU_输入7
+	SI     CPU_输出2, 1
+	RI     CPU_输出2, 1
+Network 3 
+//边沿：EU上升沿 / ED下降沿 / NOT取反
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	LD     CPU_输入8
+	EU
+	=      M0.0
+	LD     CPU_输入9
+	ED
+	=      M0.1
+	LD     CPU_输入10
+	NOT
+	=      M0.2
+Network 4 
+//逻辑堆栈：LPS压栈 / LRD读栈 / LPP出栈 / ALD栈与 / OLD栈或
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	LD     I2.0
+	LPS
+	A      I2.1
+	=      CPU_输出8
+	LRD
+	A      I2.2
+	=      CPU_输出9
+	LPP
+	A      I2.3
+	=      CPU_输出10
+	LD     I2.4
+	A      I2.5
+	OLD
+	LD     I2.6
+	ALD
+	=      CPU_输出11
+Network 5 
+//传送：MOVB字节 / MOVW字 / MOVD双字 / MOVR实数（16#十六进制常量）
+	
+	
+	
+	
+	
+	LD     Always_On
+	MOVB   16#FF, VB100
+	MOVW   +1000, VW102
+	MOVD   +100000, VD104
+	MOVR   3.14, VD108
+Network 6 
+//整数运算 +I -I *I /I（结果 OUT = IN1 运算 OUT）
+	
+	
+	
+	
+	
+	
+	LD     Always_On
+	MOVW   +100, VW200
+	+I     +50, VW200
+	-I     +20, VW200
+	*I     +3, VW200
+	/I     +2, VW200
+Network 7 
+//双整数运算 +D -D *D /D
+	
+	
+	
+	
+	
+	
+	LD     Always_On
+	MOVD   +100000, VD210
+	+D     +50000, VD210
+	-D     +10000, VD210
+	*D     +2, VD210
+	/D     +4, VD210
+Network 8 
+//实数运算 +R -R *R /R 与开方 SQRT
+	
+	
+	
+	
+	
+	LD     Always_On
+	MOVR   100.0, VD220
+	+R     50.0, VD220
+	*R     2.0, VD220
+	SQRT   VD220, VD224
+Network 9 
+//加一减一：INCB/INCW/INCD 加一，DECB/DECW/DECD 减一
+	
+	
+	
+	
+	
+	
+	
+	LD     Always_On
+	INCB   VB230
+	INCW   VW232
+	INCD   VD234
+	DECB   VB230
+	DECW   VW232
+	DECD   VD234
+Network 10 
+//字节逻辑：ANDB与 / ORB或 / XORB异或 / INVB取反
+	
+	
+	
+	
+	
+	LD     Always_On
+	ANDB   16#0F, VB240
+	ORB    16#F0, VB240
+	XORB   16#FF, VB240
+	INVB   VB240
+Network 11 
+//字逻辑：ANDW / ORW / XORW / INVW
+	
+	
+	
+	
+	
+	LD     Always_On
+	ANDW   16#0F0F, VW242
+	ORW    16#F000, VW242
+	XORW   16#FFFF, VW242
+	INVW   VW242
+Network 12 
+//移位：SLW左移 / SRW右移；循环移位：RLW左循环 / RRW右循环
+	
+	
+	
+	
+	
+	LD     Always_On
+	SLW    VW250, 4
+	SRW    VW250, 2
+	RLW    VW252, 1
+	RRW    VW252, 1
+Network 13 
+//字节移位与循环：SLB/SRB/RLB/RRB
+	
+	
+	
+	
+	
+	LD     Always_On
+	SLB    VB254, 2
+	SRB    VB254, 1
+	RLB    VB255, 3
+	RRB    VB255, 1
+Network 14 
+//比较触点（装载型）：字等于/大于，双字小于，字节大于等于
+	
+	
+	
+	
+	
+	
+	
+	
+	LDW=   VW260, +100
+	=      Q2.0
+	LDW>   VW260, +50
+	=      Q2.1
+	LDD<   VD262, +1000
+	=      Q2.2
+	LDB>=  VB266, 10
+	=      Q2.3
+Network 15 
+//比较触点（串联型 A / 并联型 O）
+	
+	
+	
+	
+	
+	
+	LD     Always_On
+	AW<    VW260, +200
+	=      Q2.4
+	LD     M1.0
+	OW>    VW260, +300
+	=      Q2.5
+Network 16 
+//数据转换：整数→双整数→实数
+	
+	
+	
+	LD     Always_On
+	ITD    VW270, VD272
+	DTR    VD272, VD276
+Network 17 
+//实数取整：ROUND四舍五入 / TRUNC取整（去小数）
+	
+	
+	
+	LD     Always_On
+	ROUND  VD276, VD280
+	TRUNC  VD276, VD284
+Network 18 
+//BCD与整数互转：BCDI（BCD→整数）/ IBCD（整数→BCD）
+	
+	
+	
+	
+	LD     Always_On
+	MOVW   16#1234, VW288
+	BCDI   VW288
+	IBCD   VW288
+Network 19 
+//接通延时 TON：I3.0 接通 100×10ms=1s 后 T37 置位
+	
+	
+	
+	
+	LD     I3.0
+	TON    T37, +100
+	LD     T37
+	=      Q3.0
+Network 20 
+//断开延时 TOF：I3.1 断开 50×10ms=0.5s 后 T38 复位
+	
+	
+	LD     I3.1
+	TOF    T38, +50
+Network 21 
+//保持型延时 TONR：断电保持累计值
+	
+	
+	LD     I3.2
+	TONR   T0, +200
+Network 22 
+//加计数 CTU：CU上升沿+1，到 PV=10 时 C0 置位；R 复位
+	
+	
+	
+	
+	
+	LD     I4.0
+	LD     I4.1
+	CTU    C0, +10
+	LD     C0
+	=      Q4.0
+Network 23 
+//减计数 CTD：CD上升沿-1，到 0 时 C1 置位；LD 装入 PV
+	
+	
+	
+	LD     I4.2
+	LD     I4.3
+	CTD    C1, +5
+Network 24 
+//加减计数 CTUD：CU加 / CD减 / R复位
+	
+	
+	
+	
+	LD     I5.0
+	LD     I5.1
+	LD     I5.2
+	CTUD   C2, +100
+Network 25 
+//跳转 JMP / 标号 LBL：条件成立跳过中间程序
+	
+	
+	
+	
+	
+	LD     I6.0
+	JMP    1
+	LD     Always_On
+	MOVB   1, VB290
+	LBL    1
+Network 26 
+//循环 FOR / NEXT：VW292 从 1 到 10 循环，每次 VB294 加一
+	
+	
+	
+	
+	LD     Always_On
+	FOR    VW292, +1, +10
+	INCB   VB294
+	NEXT
+Network 27 
+//子程序返回（条件）CRET；程序结束由主程序 MEND 控制
+	
+	
+	LD     I7.0
+	CRET
+END_SUBROUTINE_BLOCK
+

@@ -1,0 +1,9 @@
+INTERRUPT_BLOCK INT_0:INT0
+TITLE=中断服务程序示例
+BEGIN
+Network 1
+//中断里做快速处理：计数并传送
+	LD     SM0.0
+	INCD   VD900
+	MOVW   VW902, VW904
+END_INTERRUPT_BLOCK

@@ -1,0 +1,129 @@
+SUBROUTINE_BLOCK 指令大全示例:SBR20
+TITLE=S7-200 SMART 指令学习示例
+BEGIN
+Network 1
+//位逻辑：装载/与/或/输出/置位/复位
+	LD     SM0.0
+	=      M0.0
+	LD     I0.0
+	A      I0.1
+	O      I0.2
+	=      Q0.0
+	LD     I0.3
+	S      M1.0, 2
+	LD     I0.4
+	R      M1.0, 2
+Network 2
+//边沿检测：上升沿 EU / 下降沿 ED
+	LD     I1.0
+	EU
+	=      M2.0
+	LD     I1.1
+	ED
+	=      M2.1
+Network 3
+//逻辑堆栈：LPS 压栈 / LRD 读栈 / LPP 出栈 / ALD 与栈 / OLD 或栈
+	LD     I2.0
+	LPS
+	A      I2.1
+	=      Q1.0
+	LRD
+	A      I2.2
+	=      Q1.1
+	LPP
+	A      I2.3
+	=      Q1.2
+Network 4
+//传送：字节/字/双字/实数
+	LD     SM0.0
+	MOVB   16#FF, VB100
+	MOVW   +1000, VW102
+	MOVD   +100000, VD104
+	MOVR   3.14, VD108
+Network 5
+//整数运算：加减乘除（OUT = IN1 运算 OUT）
+	LD     SM0.0
+	MOVW   +100, VW200
+	+I     +50, VW200
+	-I     +20, VW200
+	*I     +3, VW200
+	/I     +2, VW200
+Network 6
+//双整数运算
+	LD     SM0.0
+	MOVD   +100000, VD210
+	+D     +50000, VD210
+	*D     +2, VD210
+Network 7
+//实数运算与开方
+	LD     SM0.0
+	MOVR   100.0, VD220
+	+R     50.0, VD220
+	*R     2.0, VD220
+	SQRT   VD220, VD224
+Network 8
+//加一/减一
+	LD     SM0.0
+	INCB   VB230
+	INCW   VW232
+	INCD   VD234
+	DECW   VW232
+Network 9
+//字逻辑：与/或/异或/取反
+	LD     SM0.0
+	ANDW   16#0F0F, VW240
+	ORW    16#F000, VW240
+	XORW   16#FFFF, VW240
+	INVW   VW240
+Network 10
+//移位与循环移位
+	LD     SM0.0
+	SLW    VW250, 4
+	SRW    VW250, 2
+	RLW    VW252, 1
+	RRW    VW252, 1
+Network 11
+//比较触点：字/双字，等于/大于/小于
+	LDW=   VW260, +100
+	=      Q2.0
+	LDW>   VW260, +50
+	=      Q2.1
+	LDD<   VD262, +1000
+	=      Q2.2
+Network 12
+//数据转换：整数→双整数→实数，实数取整
+	LD     SM0.0
+	ITD    VW270, VD272
+	DTR    VD272, VD276
+	ROUND  VD276, VD280
+	TRUNC  VD276, VD284
+Network 13
+//定时器：接通延时 TON / 断开延时 TOF / 保持型 TONR
+	LD     I3.0
+	TON    T37, +100
+	LD     I3.1
+	TOF    T38, +50
+	LD     I3.2
+	TONR   T0, +200
+Network 14
+//计数器：加计数 CTU / 减计数 CTD
+	LD     I4.0
+	LD     I4.1
+	CTU    C0, +10
+	LD     I4.2
+	LD     I4.3
+	CTD    C1, +5
+Network 15
+//程序控制：跳转 JMP / 标号 LBL
+	LD     I5.0
+	JMP    1
+	LD     SM0.0
+	MOVB   1, VB290
+	LBL    1
+Network 16
+//循环：FOR / NEXT
+	LD     SM0.0
+	FOR    VW292, +1, +10
+	INCB   VB294
+	NEXT
+END_SUBROUTINE_BLOCK
