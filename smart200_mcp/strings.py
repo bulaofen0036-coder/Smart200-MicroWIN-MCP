@@ -8,6 +8,9 @@
 
 import re
 
+# 软件的文本用系统 ANSI 代码页（中文机器上就是 GBK）；写死 gbk 在非中文系统会崩
+ANSI = "mbcs"
+
 MIN_LEN = 2
 MAX_LEN = 200
 # 允许的正文：可打印 ASCII + GBK 双字节区
@@ -19,7 +22,7 @@ def _decode(chunk):
     if all(b in _ASCII_OK for b in chunk):
         return chunk.decode("ascii")
     try:
-        text = chunk.decode("gbk")
+        text = chunk.decode(ANSI)
     except UnicodeDecodeError:
         return None
     # 允许中文、ASCII 可打印、常见全角标点；其余判为二进制误报

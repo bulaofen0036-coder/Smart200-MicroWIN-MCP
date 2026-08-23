@@ -18,21 +18,36 @@
 import os
 import re
 import shutil
+import tempfile
 
-from . import engine, enginelog, localcfg, stlcheck
+from . import engine, enginelog, localcfg, paths, stlcheck
 
-# 建新工程用的模板。默认用【软件自带的空白模板】——干净、零客户数据。
+# 软件的文本用系统 ANSI 代码页（中文机器上就是 GBK）；写死 gbk 在非中文系统会崩
+ANSI = "mbcs"
+
+# 建新工程用的模板：默认用【软件自带的空白模板】——干净、零客户数据。
 # 以前默认是拿一个客户工程当模板，自动建出来的每个工程都带着客户的程序块。
-BLANK_TEMPLATE = r"D:\smart200\template.smartV3"
 # 想以某个已有工程为底，才在 .smart200_local.json 里配 template_project。
 TEMPLATE = localcfg.get("template_project", "")
 
 
 def _pick_template(explicit=None):
-    for cand in (explicit, BLANK_TEMPLATE, TEMPLATE):
+    for cand in (explicit, paths.blank_template(), TEMPLATE):
         if cand and os.path.exists(cand):
             return cand
     return None
+
+
+def backup_project(project_path):
+    """改工程之前先备份一份。返回备份路径；已有备份就不重复覆盖。
+
+    为什么要机器强制：以前只在 docstring 里写"请用副本"，靠人自觉。
+    一旦有人把客户原始工程传进来，改完就回不去了。
+    """
+    bak = project_path + ".bak"
+    if not os.path.exists(bak):
+        shutil.copy2(project_path, bak)
+    return bak
 
 
 class FlowError(Exception):
@@ -87,7 +102,7 @@ def _net_count(text):
 def _read(path):
     raw = open(path, "rb").read()
     try:
-        return raw.decode("gbk")
+        return raw.decode(ANSI)
     except UnicodeDecodeError:
         return raw.decode("utf-8", "replace")
 
@@ -166,20 +181,24 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
         ext = os.path.splitext(src)[1] if src else ".smart"
         project_path = os.path.join(os.path.dirname(awl_files[0]), "_autoflow" + ext)
     project_path = os.path.abspath(project_path)
-    if not os.path.exists(project_path):
+    just_created = not os.path.exists(project_path)
+    if just_created:
         if not src:
             raise FlowError(
-                "没有可用的模板工程：软件自带的 %s 不存在，.smart200_local.json 里也没配 "
-                "template_project。也可以显式传 project_path 指向一个已存在的工程。"
-                % BLANK_TEMPLATE)
+                "没有可用的模板工程：软件安装目录里没找到 template.smartV3，"
+                ".smart200_local.json 里也没配 template_project / blank_template。"
+                "也可以显式传 project_path 指向一个已存在的工程。")
         shutil.copy(src, project_path)
     report["detail"]["template"] = src if src else "(用已存在的工程)"
 
-    outdir = os.path.dirname(project_path)
-    out_awl = {f: os.path.join(outdir, "_rt_%d.awl" % i) for i, f in enumerate(awl_files)}
-    for p in out_awl.values():
-        if os.path.exists(p):
-            os.remove(p)
+    # 往返核对的中间产物放系统临时目录、用完即删 ——
+    # 以前落在工程目录里且只在下次运行开头才删，用户的工程文件夹会越积越脏。
+    tmpdir = tempfile.mkdtemp(prefix="smart200_rt_")
+    out_awl = {f: os.path.join(tmpdir, "rt_%d.awl" % i) for i, f in enumerate(awl_files)}
+
+    # 已存在的工程要先备份 —— 万一传进来的是真工程，改坏了还能退回去
+    if os.path.exists(project_path) and not just_created:
+        report["detail"]["backup"] = backup_project(project_path)
 
     # ---- 第2、3、4 关的数据一次注入全部取回 ----
     # 符号必须在导入程序之前设好，否则程序里的符号名解析不了 → 整个网络变无效程序段
@@ -215,6 +234,7 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
     if not enginelog.done(log):
         report["stage2_compile"] = "FAIL"
         report["detail"]["fatal"] = "引擎脚本未跑完（无 __DONE__）—— 软件可能中途崩溃或超时"
+        shutil.rmtree(tmpdir, ignore_errors=True)
         return report
 
     # ---- 第2关：导入 + 编译（含符号是否真的设上）----
@@ -227,6 +247,7 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
     report["stage2_compile"] = "PASS" if ok2 else "FAIL"
     if not ok2:
         report["detail"]["imports"] = enginelog.imports(log)
+        shutil.rmtree(tmpdir, ignore_errors=True)
         return report
 
     # ---- 第3关：引擎真值 ----
@@ -238,6 +259,7 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
         report["detail"]["hint"] = (
             "软件判定这些网络是无效程序段（打开工程会看到标红）。"
             "注意：编译仍可能 ret=0，因为无效网络被排除在编译之外。")
+        shutil.rmtree(tmpdir, ignore_errors=True)
         return report
 
     # ---- 第4关：逐块往返核对 ----
@@ -270,6 +292,7 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
     report["stage4_roundtrip"] = "PASS" if all_ok else "FAIL"
     report["detail"]["roundtrip"] = rt
 
+    shutil.rmtree(tmpdir, ignore_errors=True)
     report["passed"] = all_ok
     report["project"] = project_path
     if open_after:
@@ -330,6 +353,7 @@ def set_symbols(project_path, symbols):
     project_path = os.path.abspath(project_path)
     if not os.path.exists(project_path):
         raise FlowError("工程不存在：" + project_path)
+    backup = backup_project(project_path)      # 改工程之前先留退路
     stem, ext = os.path.splitext(project_path)
     tmp = stem + "_saveas_tmp" + ext
     cmds = ["SYMSET %s|%s" % (addr, name) for name, addr in symbols.items()]
@@ -343,4 +367,5 @@ def set_symbols(project_path, symbols):
         os.replace(tmp, project_path)
     return {"symbols": enginelog.symbols(log),
             "all_ok": enginelog.symbols_ok(log, symbols) and enginelog.done(log),
-            "completed": enginelog.done(log)}
+            "completed": enginelog.done(log),
+            "backup": backup}

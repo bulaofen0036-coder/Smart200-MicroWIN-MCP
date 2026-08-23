@@ -5,8 +5,23 @@
 #include <cstdint>
 #include <cstdarg>
 
-static const char* RESULT = "E:\\Smart200_Mcp\\native\\bootstrap\\inject_result.txt";
-static const char* CMDFILE = "E:\\Smart200_Mcp\\native\\bootstrap\\inject_cmd.txt";
+// 命令/结果文件放在【本 DLL 自己旁边】，路径运行时从模块句柄取。
+// 以前这里写死绝对路径，别人 clone 到别的盘就跑不了，而且改 Python 没用 ——
+// 路径是编译进 DLL 的，必须装 VS 工具链重编。自寻路径后整个仓库可以随便搬。
+static char g_result[MAX_PATH] = {0};
+static char g_cmdfile[MAX_PATH] = {0};
+
+static void InitPaths(HINSTANCE hSelf) {
+    char dir[MAX_PATH] = {0};
+    GetModuleFileNameA(hSelf, dir, MAX_PATH);
+    char* slash = strrchr(dir, '\\');
+    if (slash) *(slash + 1) = 0; else dir[0] = 0;
+    sprintf_s(g_result, "%sinject_result.txt", dir);
+    sprintf_s(g_cmdfile, "%sinject_cmd.txt", dir);
+}
+
+#define RESULT  g_result
+#define CMDFILE g_cmdfile
 #define WM_SMART_RUN (WM_APP + 0x1234)
 
 static void Log(const char* fmt, ...) {
@@ -949,6 +964,7 @@ static DWORD WINAPI Setup(LPVOID) {
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(h);
+        InitPaths(h);            // 必须在起工作线程之前 —— 它一上来就要写日志
         CreateThread(nullptr, 0, Setup, nullptr, 0, nullptr);
     }
     return TRUE;

@@ -120,6 +120,27 @@ check("哨兵：SetName 非 0 必须判失败",
       not enginelog.symbols_ok(
           "script SYMSET 'I0.0' -> '电机启动' 表=x 行=0 SetName=-5", {"电机启动": "I0.0"}))
 
+
+print("=== 7. 命令下发前的校验（不需要装软件也能测）===")
+from smart200_mcp import engine
+
+check("正常命令放行", engine.validate_commands(["COMPILE", "EXPORT 块|C:/a.awl"]))
+
+def rejected(cmds):
+    try:
+        engine.validate_commands(cmds)
+        return False
+    except engine.EngineError:
+        return True
+
+check("哨兵：控制字符必须拒绝（反斜杠塌缩）",
+      rejected(["EXPORT 块|C:/x" + chr(12) + "oo.awl"]))
+check("哨兵：超长命令必须拒绝（否则引擎侧静默截断）",
+      rejected(["EXPORT 块|C:/" + "a" * 700 + ".awl"]))
+check("边界：正好 650 字节放行",
+      not rejected(["A" * 650]))
+check("边界：651 字节拒绝", rejected(["A" * 651]))
+
 print("")
 print("全部通过" if not fails else str(len(fails)) + " 项失败: " + str(fails))
 sys.exit(1 if fails else 0)

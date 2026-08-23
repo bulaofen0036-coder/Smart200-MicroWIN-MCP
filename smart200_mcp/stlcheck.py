@@ -21,6 +21,9 @@
 
 import re
 
+# 软件的文本用系统 ANSI 代码页（中文机器上就是 GBK）；写死 gbk 在非中文系统会崩
+ANSI = "mbcs"
+
 # 逻辑行起始指令（装载类，含比较装载 LDW= / LDB>= 等）
 _LD_RE = re.compile(r"^LD[NIA]?$|^LD[BWDR][=<>]{1,2}$|^LDN$")
 # 会"吃掉"额外 LD 的指令：
@@ -131,7 +134,7 @@ def check_file(path):
     with open(path, "rb") as f:
         raw = f.read()
     try:
-        text = raw.decode("gbk")
+        text = raw.decode(ANSI)
     except UnicodeDecodeError:
         text = raw.decode("utf-8", "replace")
     return check(text)

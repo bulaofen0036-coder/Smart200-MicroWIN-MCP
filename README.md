@@ -23,40 +23,64 @@
 **最实用的一点**：V3.x 打不开老的 V2 工程（需迁移，且迁移只吃 V2.8 存的）。
 本工具能直接离线读 V2 `.smart`，**不装 V2.8 也能看老天车程序的符号、POU 和用了哪些指令**。
 
-## 安装
+## 三步上手
 
 ```bash
+# 1. 依赖
 pip install -r requirements.txt
-claude mcp add smart200 -s user -- python E:/Smart200_Mcp/run.py
+
+# 2. 编译注入用的 DLL（自动找 VS Build Tools，找不到会告诉你缺什么）
+python native/bootstrap/build.py
+
+# 3. 挂上 MCP
+claude mcp add smart200 -s user -- python <仓库路径>/run.py
 ```
 
-### 本机私有配置
+挂好之后**先跑 `smart_doctor`**，它会一次说清缺什么、怎么补。
 
-模板工程、回归样本、UIA 交叉验证真值都是**客户工程内容，不入库**。
-在仓库根建 `.smart200_local.json`（已 gitignore）：
+**路径不用改。** 仓库放哪个盘都行（注入 DLL 运行时自寻路径），
+MicroWIN 安装位置自动探测。探测不到时按 `smart_doctor` 的提示设一个环境变量：
+
+| 环境变量 | 作用 |
+|---|---|
+| `SMART200_EXE` | MWSmartV3.exe 完整路径 |
+| `SMART200_TEMPLATE` | 空白模板工程路径（默认取安装目录下的 `template.smartV3`） |
+| `SMART200_SCRIPT_TIMEOUT` | 单次注入等待上限，默认 180 秒；大工程编译慢可调大 |
+
+也可以写进仓库根的 `.smart200_local.json`（已 gitignore）：
 
 ```json
 {
-  "template_project": "建新工程用的模板 .smart 绝对路径",
-  "samples_glob": "回归样本通配路径，如 D:/proj/**/*.smart",
-  "truth_project": "UIA 交叉验证过的那个工程路径",
+  "mwsmart_exe": "D:/smart200/MWSmartV3.exe",
+  "blank_template": "D:/smart200/template.smartV3",
+  "samples_glob": "回归样本通配路径（可选，只影响 test_all 的部分小节）",
+  "truth_project": "UIA 交叉验证过的工程（可选）",
   "truth_pou_names": ["POU名1", "POU名2"]
 }
 ```
 
-缺这个文件不影响 MCP 主功能，只会让 `tests/test_all.py` 相关小节**如实打印 SKIP**
-（不是静默通过）。`smart_deploy` 新建工程默认用**软件自带的空白模板**
-（`template.smartV3`，在软件安装目录下），不需要 `template_project`；
-配了它只是为了"以某个已有工程为底"。
+## 90% 的活只用一个工具
 
-`smart200_mcp/engine.py` 顶部还有两条本机绝对路径需按实际改：`INJECTOR`、`MWSMART`。
+```python
+smart_deploy(
+    awl_files=["motor.awl"],
+    symbols={"电机启动": "I0.0", "电机运行": "Q0.0"},   # 可选：给 I/O 命名
+    open_after=True,                                    # 顺手打开给人看
+)
+```
 
-## 工具（22 个）
+它一次注入里把**设符号 → 导程序 → 编译 → 四关验证 → 保存**全干完。
+别拆成 `smart_set_symbols` + `smart_deploy` + `smart_open_project` 三次调用 ——
+每次调用都要重启一个 MicroWIN 实例（约 16 秒等工程载入），拆开就是三倍时间。
 
-**全自动主入口**：`smart_deploy`（四关验证部署）`smart_validate_project`（问引擎要真值）
-`smart_check_stl`（离线预检）`smart_set_symbols`（给 I/O 命名）
-`smart_open_project` `smart_run_workflow`
-`smart_import_blocks` `smart_export_blocks` `smart_compile_and_export` `smart_awl_analyze`
+## 工具（23 个）
+
+**先跑这个**：`smart_doctor`（环境自检）
+**主入口**：`smart_deploy`（设符号+部署+四关验证，一步到位）
+**常用**：`smart_validate_project`（问引擎要真值）`smart_check_stl`（离线秒级预检）
+`smart_export_blocks`（把现有工程的块导成 AWL 来读）`smart_awl_analyze`
+**其余**：`smart_set_symbols` `smart_open_project` `smart_run_workflow`
+`smart_import_blocks` `smart_compile_and_export`
 **离线**：`smart_probe` `smart_list_projects` `smart_analyze` `smart_symbols`
 `smart_function_blocks` `smart_compare`
 **在线**：`smart_plc_info` `smart_plc_read` `smart_plc_write`
@@ -125,13 +149,16 @@ Network 1
 3. 绝不按进程名批量杀 `MWSmartV3.exe`
 4. 写 PLC、点编译等会改变状态的操作，一律要求显式 `confirm=True`
 5. 找不到控件/解不开文件就抛异常，**绝不静默返回空**——那会把失败伪装成成功
+6. **改已存在的工程前自动备份** `<工程>.bak`（以前只在文档里写"请用副本"，靠自觉）
+7. **进程退出时收掉自己起的实例**（`atexit`），只收自己起的，绝不按进程名批量杀
+8. **注入串行化**：命令/结果文件全局只有一份，并发会串台且串台结果看着像正常结果
 
 ## 测试
 
 ```bash
-python tests/test_all.py        # 容器/解析/地址层
-python tests/test_stlcheck.py   # 无效程序段静态检查器防回归
-python tests/test_enginelog.py  # 引擎日志判据防回归
+python tests/test_stlcheck.py   # 纯逻辑，clone 下来就能跑
+python tests/test_enginelog.py  # 纯逻辑，clone 下来就能跑
+python tests/test_all.py        # 容器/解析层，部分小节需要真实工程样本（缺了会打印 SKIP）
 ```
 
 三套都含**必错哨兵**（哨兵若 PASS 就说明测试本身坏了）：

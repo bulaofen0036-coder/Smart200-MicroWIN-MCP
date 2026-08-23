@@ -37,3 +37,6 @@ samples/_rt_*.awl
 native/bootstrap/*.dll.bak
 samples/*.ERR
 samples/_symfmt/
+samples/bisect/
+samples/_verify/
+_tmpcheck/

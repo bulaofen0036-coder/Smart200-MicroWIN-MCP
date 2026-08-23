@@ -17,6 +17,9 @@ AWL 是 STEP 7-Micro/WIN SMART 的程序块导出文本格式（GBK 编码，CRL
 
 import re
 
+# 软件的文本用系统 ANSI 代码页（中文机器上就是 GBK）；写死 gbk 在非中文系统会崩
+ANSI = "mbcs"
+
 _BLOCK_HEAD = re.compile(r"^(SUBROUTINE_BLOCK|PROGRAM_BLOCK|ORGANIZATION_BLOCK|INTERRUPT_BLOCK|DATA_BLOCK)\s+(.+?):(\w+)\s*$")
 _BLOCK_END = re.compile(r"^END_(SUBROUTINE_BLOCK|PROGRAM_BLOCK|ORGANIZATION_BLOCK|INTERRUPT_BLOCK|DATA_BLOCK)\s*$")
 _NETWORK = re.compile(r"^Network\s+(\d+)\s*$")
@@ -64,7 +67,7 @@ def parse(text):
 
 def decode_bytes(data):
     """AWL 是 GBK 编码。去掉可能的 'SUB'(\\x1a) 尾字符。"""
-    return data.decode("gbk", "replace")
+    return data.decode(ANSI, "replace")
 
 
 def analyze(block):

@@ -9,20 +9,30 @@
 红线：只对【自己启动的独立实例】注入，绝不注入用户正在编辑的进程。
 """
 
+import atexit
 import ctypes
 import ctypes.wintypes as wintypes
 import os
 import subprocess
+import threading
 import time
 
-from . import enginelog
+from . import enginelog, paths
 
-BASE = r"E:\Smart200_Mcp\native\bootstrap"
-INJECTOR = r"E:\Smart200_Mcp\native\injector\bin\Release\net8.0\win-x86\injector.exe"
-DLL = os.path.join(BASE, "smarthook_WORKING.dll")
-CMD_FILE = os.path.join(BASE, "inject_cmd.txt")
-RESULT_FILE = os.path.join(BASE, "inject_result.txt")
-MWSMART = r"D:\smart200\MWSmartV3.exe"
+# 路径一律走 paths 模块（自动探测 + 环境变量/配置覆盖），这里不再有硬编码
+BASE = paths.BOOTSTRAP
+INJECTOR = paths.INJECTOR
+DLL = paths.DLL
+CMD_FILE = paths.CMD_FILE
+RESULT_FILE = paths.RESULT_FILE
+
+# 与软件交换文本用【系统 ANSI 代码页】，不是写死 GBK ——
+# 写死 gbk 在非中文 Windows 上直接崩。简体中文机器上 mbcs 就是 GBK，行为不变。
+ANSI = "mbcs"
+
+# 命令/结果文件是【固定的单份】，两个操作同时跑会互相覆盖、日志串台，
+# 而所有判据都读这个日志 —— 串台的结果长得跟正常结果一样。加锁串行化。
+_INJECT_LOCK = threading.Lock()
 
 # 红线的机器强制点：只允许注入【本模块自己启动的】实例。
 # 以前这里是一个空的 USER_PROTECTED_PIDS 黑名单，从没人往里加 PID —— 等于没有防护。
@@ -32,6 +42,22 @@ _OWN_PIDS = set()
 
 class EngineError(Exception):
     pass
+
+
+@atexit.register
+def _cleanup_own_instances():
+    """进程退出时把自己起的实例收掉。
+
+    不做这件事的话，MCP 服务一退，启动过的 MicroWIN 就留在后台 —— 实测漏过 4 个。
+    只收自己起的（_OWN_PIDS），绝不按进程名批量杀。
+    """
+    for pid in list(_OWN_PIDS):
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+    _OWN_PIDS.clear()
 
 
 def _smartapp_title(pid):
@@ -85,21 +111,35 @@ def _read_result():
         return f.read().decode("utf-8", "replace")
 
 
-def _wait_done(timeout=60):
+# 一次注入的默认等待上限。大工程编译会久，可用环境变量调。
+SCRIPT_TIMEOUT = int(os.environ.get("SMART200_SCRIPT_TIMEOUT", "180"))
+
+
+def _wait_done(timeout=None):
+    """等脚本跑完（日志出现 __DONE__）。
+
+    超时【必须抛异常】：以前这里直接 return 半截日志，调用方拿它当正常结果用，
+    等于把"软件中途崩了"伪装成"跑完了"。判据全建立在这个日志上，绝不能含糊。
+    """
+    timeout = SCRIPT_TIMEOUT if timeout is None else timeout
     deadline = time.time() + timeout
     while time.time() < deadline:
         log = _read_result()
         if "__DONE__" in log:
             return log
         time.sleep(0.4)
-    return _read_result()
+    log = _read_result()
+    raise EngineError(
+        "引擎脚本 %d 秒内没跑完（日志无 __DONE__）—— 软件可能中途崩了或这活确实久。"
+        "大工程可设环境变量 SMART200_SCRIPT_TIMEOUT 放宽。已拿到的半截日志：%s"
+        % (timeout, chr(10) + log[-800:] if log else "(空)"))
 
 
 def launch_instance(project_path, timeout=90):
     """启动【独立】实例载入工程，等到工程真的载入后返回 PID。"""
     if not os.path.exists(project_path):
         raise EngineError(f"工程不存在：{project_path}")
-    p = subprocess.Popen([MWSMART, project_path])
+    p = subprocess.Popen([paths.mwsmart(), project_path])
     _OWN_PIDS.add(p.pid)
     try:
         wait_ready(p.pid, project_path, timeout=timeout)
@@ -114,8 +154,39 @@ def launch_instance(project_path, timeout=90):
 
 
 def kill_instance(pid):
-    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+    """收掉自己起的实例。杀不掉时返回 False —— 不静默吞掉。"""
+    try:
+        r = subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, timeout=15)
+        ok = (r.returncode == 0)
+    except Exception:
+        ok = False
     _OWN_PIDS.discard(pid)
+    return ok
+
+
+MAX_CMD_BYTES = 650      # C++ 侧逐行缓冲区 700 字节，留点余量
+
+
+def validate_commands(commands):
+    """下发前校验命令。单独一个函数是为了能脱离软件直接测。
+
+    两类问题都会造成【静默走偏】，必须提前拦：
+      · 控制字符 —— 上游路径拼接时反斜杠转义塌缩(\\f \\n \\t)，软件会写到错误路径还报成功
+      · 超长     —— 引擎侧按 700 字节逐行读，超了直接截断，截断后的路径指向别处
+    """
+    for c in commands:
+        bad = [hex(ord(ch)) for ch in c if ord(ch) < 0x20 and ch not in "\t"]
+        if bad:
+            raise EngineError(f"命令含控制字符 {bad}，疑似路径转义塌缩：{c!r}。"
+                              f"请用原始字符串 r'...' 或 os.path.join 构造路径。")
+        n = len(c.encode(ANSI, "replace"))
+        if n > MAX_CMD_BYTES:
+            raise EngineError(
+                "命令过长（%d 字节，上限 %d）：%.80s…"
+                "引擎侧按 700 字节缓冲逐行读，超了会静默截断。请把输出路径改短一些。"
+                % (n, MAX_CMD_BYTES, c))
+    return True
 
 
 def run_script(pid, commands):
@@ -129,23 +200,22 @@ def run_script(pid, commands):
             f"用户正在编辑的实例绝不能被注入 —— 请先 launch_instance() 起一个独立实例。")
     if not os.path.exists(DLL):
         raise EngineError(f"找不到引擎 DLL: {DLL}")
-    # 防护：命令里出现控制字符 = 上游路径拼接时反斜杠转义塌缩（如 \f \n \t），
-    # 会让软件写到错误路径、导出静默失败。宁可早报错。
-    for c in commands:
-        bad = [hex(ord(ch)) for ch in c if ord(ch) < 0x20 and ch not in "\t"]
-        if bad:
-            raise EngineError(f"命令含控制字符 {bad}，疑似路径转义塌缩：{c!r}。"
-                              f"请用原始字符串 r'...' 或 os.path.join 构造路径。")
+    validate_commands(commands)
     lines = ["script"] + commands
-    body = ("\r\n".join(lines) + "\r\n").encode("gbk")
-    if os.path.exists(RESULT_FILE):
-        os.remove(RESULT_FILE)
-    with open(CMD_FILE, "wb") as f:
-        f.write(body)
-    # 注意别加 text=True：注入器输出是 GBK，用默认解码会在读取线程里抛
-    # UnicodeDecodeError（线程内异常，主流程看不见，只在 stderr 冒一堆栈）。
-    subprocess.run([INJECTOR, str(pid), DLL], capture_output=True, timeout=60)
-    log = _wait_done()
+    body = ("\r\n".join(lines) + "\r\n").encode(ANSI, "replace")
+    # 命令/结果文件全局只有一份，并发会串台 —— 整段注入串行化
+    with _INJECT_LOCK:
+        if os.path.exists(RESULT_FILE):
+            os.remove(RESULT_FILE)
+        with open(CMD_FILE, "wb") as f:
+            f.write(body)
+        # 注意别加 text=True：注入器输出是本地代码页，用默认解码会在读取线程里抛
+        # UnicodeDecodeError（线程内异常，主流程看不见，只在 stderr 冒一堆栈）。
+        try:
+            subprocess.run([INJECTOR, str(pid), DLL], capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            raise EngineError("注入器 60 秒没返回，可能目标进程已经卡死")
+        log = _wait_done()
     if "g_Retrieve=" not in log:
         raise EngineError(f"脚本未触发：\n{log}")
     return log
@@ -154,13 +224,20 @@ def run_script(pid, commands):
 # ---- 高层：从工程路径一步到位（自动起实例、跑脚本、关实例）----
 
 def _run_on_project(project_path, commands, keep_open=False):
+    """跑一条脚本并【确认真的跑完了】。
+
+    以前这里不查 __DONE__，上层三个函数（export/compile/import）拿半截日志就下结论 ——
+    软件中途崩掉会被当成"跑完了但没成功"，甚至更糟：崩之前已完成的那步让判据判成成功。
+    """
     pid = launch_instance(project_path)
     try:
         log = run_script(pid, commands)
-        return log, pid
     finally:
         if not keep_open:
             kill_instance(pid)
+    if not enginelog.done(log):
+        raise EngineError("引擎脚本没跑完（日志无 __DONE__），结果不可信：" + chr(10) + log[-600:])
+    return log, pid
 
 
 def export_blocks(project_path, names_to_paths):

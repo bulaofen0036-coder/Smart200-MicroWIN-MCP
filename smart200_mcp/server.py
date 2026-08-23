@@ -11,9 +11,28 @@ import os
 
 from mcp.server import MCPServer
 
-from . import container, online, project, ui, awl, engine, stlcheck, autoflow
+from . import container, online, project, ui, awl, engine, paths, stlcheck, autoflow
 
 mcp = MCPServer("smart200", version="0.3.0")
+
+
+@mcp.tool()
+def smart_doctor() -> dict:
+    """环境自检：一次说清缺什么、怎么补。装好之后先跑这个。
+
+    检查引擎 DLL、注入器、MicroWIN 安装位置、空白模板是否都就位。
+    """
+    missing = paths.check()
+    return {
+        "ok": not missing,
+        "仓库根": paths.ROOT,
+        "引擎DLL": paths.DLL,
+        "注入器": paths.INJECTOR,
+        "MicroWIN": (paths.mwsmart() if not missing else "未找到"),
+        "空白模板": paths.blank_template() or "未找到（新建工程会失败，可传 project_path 绕开）",
+        "脚本超时秒": engine.SCRIPT_TIMEOUT,
+        "问题": missing,
+    }
 
 
 # ---------- 离线工程解析 ----------
