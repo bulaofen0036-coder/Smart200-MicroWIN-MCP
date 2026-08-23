@@ -1,0 +1,7 @@
+SUBROUTINE_BLOCK 单符号测试:SBR32
+TITLE=只用一个自建符号
+BEGIN
+Network 1
+	LD     测试符号
+	=      Q0.6
+END_SUBROUTINE_BLOCK

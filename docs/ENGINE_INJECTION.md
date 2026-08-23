@@ -170,59 +170,54 @@ long __thiscall MWRetrieve::POU_IsValidNet(MW_ID const&, unsigned short net,
 
 附带确认：**未定义的符号名不会让编译报错，而是让整个网络变成无效程序段** —— 第 3 关抓得到。
 
-## 符号表探路记录（2026-08-23，未拿下但排除了大量错路）
+## 符号表：已打通（2026-08-23）
 
-结论先说：**目前建不了符号，生成的程序只能用绝对地址**。以下是已排除的路和卡点，
-省得下次重走。
+### 表结构
 
-### 已排除：`PRJ_Import` 不管符号表
+符号表在引擎里叫 **GVT（全局变量表）**。`GLBVAR_GetCount`/`GLBVAR_GetId` 那套枚举
+**恒返 0**（和 `POU_GetCount` 一样），只能按 MW_ID 的规律扫：
+表 id 形如 `{0, 序号, 变体, 0x80……}`，序号在 `0x0dac`~`0x0db2` 连着排。扫出来 7 张：
 
-它是 **AWL 导入器**。喂任何符号表文本都在**第一个 token** 就报错：
+| 表 | 行数 | 用途 |
+|---|---|---|
+| `变量表 1` | 5 空行 | **V 区变量**，只给名字和类型，地址由编译器分配 |
+| `常量表 1` | 5 | 常量 |
+| `I/O 变量` | 32 | **绝对地址符号**，每个 I/O 点一行，地址现成 |
+| `POU Variables` | 31 | POU 局部变量 |
+| `系统变量表` | 448 | `Always_On`/`SM0.0` 等 |
+| `FB实例表` / `系统运动控制变量表` | — | 别往这两张写 |
 
-| 试的格式 | 报错 |
-|---|---|
-| 带引号 CSV（有/无表头，中英文）| `Syntax error at token: "Motor_Start"` |
-| 裸 CSV / 分号 / 空格 / TAB 分隔 | `Syntax error at token: Motor_Start` |
-| 自造 `SYMBOL_TABLE ... END_SYMBOL_TABLE` | `Syntax error at token: SYMBOL_TABLE` |
+### 能用的写法
 
-**有用的副产品**：导入失败时软件会在旁边生成 `<原文件>.ERR`，里面写着卡在哪个 token —— 
-这是个免费的语法反馈回路，试格式时先看它，别盲猜。
+**绝对地址符号 = 改「I/O 变量」表里那一行的名字**（`GLBVAR_SetName(id, row, 名字, 0,0,0)`）。
+script 命令 `SYMSET 地址|名字` 会自己扫表定位行，调用方不用管表 id（各工程可能不同）。
 
-引擎 DLL 的语法关键字表里根本没有 SYMBOL 相关词（有 `DATA_BLOCK_TAB`/`END_DATA_BLOCK_TAB`、
-`ORGANIZATION_BLOCK`、`VAR_*` 等），所以此路不通是结构性的，不是语法没猜对。
+**为什么不是新建行**：在空行上 `GLBVAR_SetAddressValue` 恒报 `0xA0001783`(6019)；
+但对**已经有地址的行**它是好用的（实测把 `CPU_输入0` 的地址从 I0.0 改成 I0.7，ret=0 生效）。
 
-### 已确认：扩展名是 `.sym` 不是 `.sdf`
+**落盘只能靠 `SAVEAS`**：`PRJ_Save` 不保存变量表 —— 存完重开符号全没。
+`GLBVAR_SaveVariableTable` 和 `GLBVAR_LoadVariableTable` 都**会当场崩进程**，别调。
 
-资源 DLL 里的文件过滤器写着 `Symbol Tables (*.sym)|*.sym||`。但换扩展名不解决问题
-（见上表，`PRJ_Import` 照样在第一个 token 报错）。
+### 走过的弯路（别再走）
 
-### 能用的部分：`PRJ_ExportGVT` 导得出整张符号表
+- `PRJ_Import` 是 **AWL 导入器**，不管符号表：8 种符号表文本格式全部卡在**第一个 token**。
+  引擎 DLL 的语法关键字表里根本没有 SYMBOL 相关词。
+  （有用的副产品：导入失败会生成 `<文件>.ERR` 写着卡在哪个 token，是免费的语法反馈回路。
+  看"卡在第几个"：第一个 = 整条路走错，中间 = 格式细节不对。）
+- 扩展名是 `.sym` 不是 `.sdf`（资源里的过滤器写着），但换了也没用。
+- `GLBVAR_ParseImportGVTFileContent` 恒返 `E_INVALIDARG`（内容、路径、各种 flag 都试过）。
+- `GLBVAR_ImportBinaryVariableTable` 用真表 id 会返 0，但**是空操作**，数据不进去。
+- `SYM_InsertSymbol` / `GLBVAR_InsertVariable` 能把地址写进去，但建出来的行
+  **标志位是 `0x0C11`（正常行是 `0x0C00`）**，程序里解析不了。
+  `DefineVariable`/`EditVariable`/`SetBindFlag`/`SetInitValue` 都清不掉这两个 bit。
 
-符号表在引擎里叫 **GVT（全局变量表）**。
-`?PRJ_ExportGVT@MWRetrieve@@QBEJABVMW_ID@@ABV?$CStringT...@Z`，签名与已跑通的 
-`PRJ_ExportXML` 同款，而且 **MW_ID 传全零就能导出**（ret=0，空模板导出 29224 B）。
-→ 已实现为 script 命令 `EXPORTGVT 名字|路径`（名字写 `*` 用全零 id）。
+### 调 ATL CString 参数的三条铁律（这次全踩了一遍）
 
-但导出的是**二进制**（可打印字符仅 38.9%），编辑不了，所以只能整表搬运、不能编写内容。
-
-### 卡点：导入要真实的表 MW_ID
-
-`GLBVAR_ImportBinaryVariableTable(char const*, MW_ID const&)` 传全零 id 返 `0xA000177E`。
-**同一个工程自导自入也是同样的错** —— 所以问题是"导入不接受全零 id"，
-不是跨工程或跨版本不兼容（这一步排除得很关键，否则会往错方向修）。
-
-拿句柄的进展：`GLBVAR_CreateUndefinedVariableTable(MW_ID&)` **能返回一个非全零 id**
-（`00000000ac0d00000000000001000000`，ret=6010，多次调用稳定返回同一个）。
-这是第一次拿到真实表句柄 —— 此前 `SYM_FindSymbol` 一直返错且 id 全零。
-
-但 `SYM_InsertSymbol(id, row=0, 名, 地址, 注释, 0)` 仍返 `0xA00007DA`。推测原因：
-**"未定义符号表"不是该写入的那张表**（它是树里"未定义符号"那栏），
-或者 row 不是 0 起。下一步应该是找/造"用户符号表"，并摸清 row 与最后那个 int 标志的语义。
-
-### 附带确认
-
-**未定义的符号名不会让编译报错，而是让整个网络变成无效程序段** —— 第 3 关抓得到。
-所以即使符号功能没打通，写错符号名也不会静默溜过去。
-
-以上探路命令（`SYMFIND`/`EXPORTGVT`/`IMPORTGVT`/`SYMADD`）都留在 hook 里，
-**属实验性质，没接进 MCP 工具**，只能用 `smart_run_workflow` 手动调。
+1. **`pStringMgr` 不能填 NULL**。只读字符串的 API 没事，但凡会**拷贝存储** CString 的
+   （如 `InsertVariable`），拷贝构造要走 `pStringMgr->Clone()`，NULL 当场崩。
+   解法：调一个**按值返回 CString** 的引擎函数（`GLBVAR_GetDataSize`），
+   从返回值数据指针往前 16 字节把真 manager 抠出来。
+2. **按值传的 CString 参数**（如 `SetDataTypeByAddress`）要给一个**很大的 nRefs**。
+   默认 -1 时被调方析构临时对象，`Release()` 递减后 <=0 会调 `Free()` 释放我 malloc 的块 → 堆崩。
+3. **CString 出参**读回来要按头部的 `nDataLength` 做**有界拷贝**，别当普通 C 串直读 —— 
+   引擎赋值后会换掉数据指针，直读可能越界（现象是日志被截断在半截）。

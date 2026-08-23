@@ -194,7 +194,8 @@ def smart_validate_project(project_path: str, block_names: list[str]) -> dict:
 
 @mcp.tool()
 def smart_deploy(awl_files: list[str], project_path: str = "",
-                 verify_block: str = "", open_after: bool = False) -> dict:
+                 symbols: dict = None, verify_block: str = "",
+                 open_after: bool = False) -> dict:
     """【全自动·推荐入口】把 AWL 块部署进工程并做四关验证，一步到位。
 
     四关（任何一关不过都会如实报 FAIL，不吹成功）：
@@ -205,13 +206,28 @@ def smart_deploy(awl_files: list[str], project_path: str = "",
 
     awl_files 顺序：主程序(ORGANIZATION_BLOCK/OB1)会自动排到最前（导入 OB1 会替换
     整个程序集）；其余按依赖排，被 CALL 的子程序、被 ATCH 的中断程序排在引用者之前。
+    symbols = {"符号名": "绝对地址"}，如 {"电机启动": "I0.0", "电机运行": "Q0.0"}。
+    设了就能在 AWL 里直接写符号名（`LD 电机启动`），可读性和客户现场维护性都好得多。
     project_path 留空则用【软件自带的空白模板】新建（不含任何已有工程内容）。
     open_after=True 会把工程留开给人看。
     """
     return autoflow.deploy(awl_files,
                            project_path=project_path or None,
+                           symbols=symbols or None,
                            verify_block=verify_block or None,
                            open_after=open_after)
+
+
+@mcp.tool()
+def smart_set_symbols(project_path: str, symbols: dict) -> dict:
+    """给 I/O 地址命名（写符号表），之后程序里就能用符号名代替 I0.0 这种绝对地址。
+
+    symbols = {"符号名": "绝对地址"}，如 {"电机启动": "I0.0", "急停": "I0.7"}。
+    做法：I/O 变量表里每个 I/O 点本来就有一行、地址是现成的，这里改的是那一行的名字。
+    ⚠ 只支持 CPU 上实际存在的 I/Q 点；地址找不到对应行会如实报 ok=False，不会假装成功。
+    ⚠ 会修改并另存工程（符号表必须靠 SAVEAS 落盘，普通保存存不下来）。
+    """
+    return autoflow.set_symbols(project_path, symbols)
 
 
 @mcp.tool()

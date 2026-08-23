@@ -1,0 +1,8 @@
+SUBROUTINE_BLOCK 符号对照:SBR31
+TITLE=只用已存在的系统符号
+BEGIN
+Network 1
+//Always_On 是系统符号表里现成的
+	LD     Always_On
+	=      Q0.5
+END_SUBROUTINE_BLOCK

@@ -73,3 +73,30 @@ def validation_ok(log, block_names):
 
 def ret_lines(log):
     return [l for l in log.splitlines() if "ret=" in l or "INVALID" in l or "ERR" in l]
+
+_SYM_OK_RE = re.compile(r"SYMSET '([^']*)' -> '([^']*)' 表=\S+ 行=(\d+) SetName=(-?\d+)")
+_SYM_ERR_RE = re.compile(r"SYMSET '([^']*)' ERR=(\S+)")
+
+
+def symbols(log):
+    """符号设置结果：{地址: {"name":符号名, "row":行号, "ok":是否成功}}
+
+    地址找不到对应的行时记 ok=False —— 绝不能当成功放过去，
+    否则程序里的符号名解析不了，整个网络会变成无效程序段。
+    """
+    out = {}
+    for addr, name, row, ret in _SYM_OK_RE.findall(log):
+        out[addr.upper()] = {"name": name, "row": int(row), "ok": ret == "0"}
+    for addr, why in _SYM_ERR_RE.findall(log):
+        out[addr.upper()] = {"name": None, "row": None, "ok": False, "error": why}
+    return out
+
+
+def symbols_ok(log, wanted):
+    """wanted 是 {符号名: 地址}。每个都要真的设上才算过。"""
+    got = symbols(log)
+    for name, addr in wanted.items():
+        r = got.get(addr.upper())
+        if not r or not r["ok"] or r["name"] != name:
+            return False
+    return True

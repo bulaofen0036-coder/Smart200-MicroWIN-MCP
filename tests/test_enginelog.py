@@ -91,6 +91,35 @@ old_style = "IMPORTPOU " + FILES[0] + " ret=0"
 check("旧的无引号拼串在真实日志里确实匹配不到（证明 B1 是真 bug）",
       old_style not in REAL_OK)
 
+
+print("=== 5. 符号判据（SYMSET）===")
+SYM_OK = NL.join([
+    "script SYMSET 'I0.0' -> '电机启动' 表=00000000ae0d00000000000000000080 行=0 SetName=0",
+    "script SYMSET 'Q0.0' -> '电机运行' 表=00000000ae0d00000000000000000080 行=16 SetName=0",
+    "__DONE__",
+])
+SYM_BAD = NL.join([
+    "script SYMSET 'I0.0' -> '电机启动' 表=00000000ae0d00000000000000000080 行=0 SetName=0",
+    "script SYMSET 'I9.9' ERR=没找到该地址所在的行",
+    "__DONE__",
+])
+WANT = {"电机启动": "I0.0", "电机运行": "Q0.0"}
+check("解析出两个符号", set(enginelog.symbols(SYM_OK)) == {"I0.0", "Q0.0"},
+      enginelog.symbols(SYM_OK))
+check("全部设上判为通过", enginelog.symbols_ok(SYM_OK, WANT))
+check("地址大小写不敏感", enginelog.symbols_ok(SYM_OK, {"电机启动": "i0.0", "电机运行": "q0.0"}))
+
+print("=== 6. 符号判据的必错哨兵 ===")
+check("哨兵：地址找不到行必须判失败",
+      not enginelog.symbols_ok(SYM_BAD, {"电机启动": "I0.0", "急停": "I9.9"}))
+check("哨兵：少设一个符号必须判失败",
+      not enginelog.symbols_ok(SYM_OK, dict(WANT, 急停="I0.7")))
+check("哨兵：名字对不上必须判失败",
+      not enginelog.symbols_ok(SYM_OK, {"别的名字": "I0.0"}))
+check("哨兵：SetName 非 0 必须判失败",
+      not enginelog.symbols_ok(
+          "script SYMSET 'I0.0' -> '电机启动' 表=x 行=0 SetName=-5", {"电机启动": "I0.0"}))
+
 print("")
 print("全部通过" if not fails else str(len(fails)) + " 项失败: " + str(fails))
 sys.exit(1 if fails else 0)

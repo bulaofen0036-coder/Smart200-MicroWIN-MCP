@@ -1,0 +1,7 @@
+SUBROUTINE_BLOCK IO符号测试:SBR33
+TITLE=用 I/O 变量表里的现成符号
+BEGIN
+Network 1
+	LD     CPU_输入0
+	=      Q0.4
+END_SUBROUTINE_BLOCK

@@ -51,10 +51,11 @@ claude mcp add smart200 -s user -- python E:/Smart200_Mcp/run.py
 
 `smart200_mcp/engine.py` 顶部还有两条本机绝对路径需按实际改：`INJECTOR`、`MWSMART`。
 
-## 工具（21 个）
+## 工具（22 个）
 
 **全自动主入口**：`smart_deploy`（四关验证部署）`smart_validate_project`（问引擎要真值）
-`smart_check_stl`（离线预检）`smart_open_project` `smart_run_workflow`
+`smart_check_stl`（离线预检）`smart_set_symbols`（给 I/O 命名）
+`smart_open_project` `smart_run_workflow`
 `smart_import_blocks` `smart_export_blocks` `smart_compile_and_export` `smart_awl_analyze`
 **离线**：`smart_probe` `smart_list_projects` `smart_analyze` `smart_symbols`
 `smart_function_blocks` `smart_compare`
@@ -88,6 +89,34 @@ claude mcp add smart200 -s user -- python E:/Smart200_Mcp/run.py
   .awl 里常有好几个 BLOCK —— 核对时要先切出目标块那一段，否则网络数对不上。
 - **未定义的符号名会让整个网络变成无效程序段**（不是编译报错），第 3 关能抓到。
 
+## 符号表（已打通）
+
+给 I/O 地址命名后，AWL 里就能直接写符号名，可读性和现场维护性好得多：
+
+```python
+smart_deploy(["motor.awl"], symbols={"电机启动": "I0.0", "电机停止": "I0.1", "电机运行": "Q0.0"})
+```
+
+```
+Network 1
+	LD     电机启动
+	O      电机运行
+	AN     电机停止
+	=      电机运行
+```
+
+**原理（踩了很多弯路才搞清）**：
+
+- **符号表在引擎里叫 GVT（全局变量表）**，一个工程有 7 张：
+  `I/O 变量`、`变量表 1`、`常量表 1`、`POU Variables`、`系统变量表`、`FB实例表`、`系统运动控制变量表`。
+- **绝对地址符号走「I/O 变量」表**：这张表本来就把每个 I/O 点列全了、地址是现成的，
+  所以是**改那一行的名字**，不是新建行 —— 在空行上 `SetAddressValue` 恒报 6019，新行设不了地址。
+- **「变量表 1」是 V 区变量表，不是符号表**：那里只给名字和类型，**地址由编译器自动分配**
+  （实测分到 `DB2.DBX0.0`）。想绑死 `I0.0` 这种绝对地址就别用它。
+- **符号表必须用 SAVEAS 落盘**：`PRJ_Save` 不保存变量表 —— 存完重开符号全没了（踩过）。
+  `smart_deploy` 带 `symbols` 时会自动 SAVEAS 到临时文件再替换回去。
+- **未定义的符号名不报编译错，而是让整个网络变成无效程序段** —— 第 3 关抓得到。
+
 ## 安全红线（照搬 TIA MCP 的教训）
 
 1. **注入只允许打到本模块自己启动的实例**（`engine._OWN_PIDS` 白名单，机器强制）。
@@ -113,12 +142,6 @@ python tests/test_enginelog.py  # 引擎日志判据防回归
 
 ## 已知边界
 
-- **建不了符号表**（生成的程序只能用**绝对地址**；读已有工程时符号名正常带出来）。
-  已排除的错路见 docs/ENGINE_INJECTION.md「符号表探路记录」：`PRJ_Import` 是 AWL 导入器、
-  不管符号表（任何符号表文本都在第一个 token 报错）；扩展名是 `.sym` 不是 `.sdf`，但换了也没用。
-  能用的部分：`PRJ_ExportGVT` **传全零 MW_ID 就能导出整张符号表**（但是二进制，编辑不了）。
-  卡点：导入必须要真实的表 MW_ID。已能用 `GLBVAR_CreateUndefinedVariableTable` 拿到一个非零句柄，
-  但 `SYM_InsertSymbol` 仍返 `0xA00007DA` —— 多半那张不是该写入的表。
 - **枚举不了工程里有哪些块**：`POU_GetCount` 按 MW_IDType 枚举恒返 0，只能按名字查。
   想知道有哪些块得走 UI 层 `smart_ui_project_tree`。
 - 下载到 PLC 未打通（`PRJ_Download` 未接线，snap7 层未经真机验证）

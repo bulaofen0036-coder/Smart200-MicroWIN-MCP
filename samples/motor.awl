@@ -1,0 +1,10 @@
+SUBROUTINE_BLOCK 电机控制:SBR34
+TITLE=用自己命名的 I/O 符号
+BEGIN
+Network 1
+//启停自锁
+	LD     电机启动
+	O      电机运行
+	AN     电机停止
+	=      电机运行
+END_SUBROUTINE_BLOCK

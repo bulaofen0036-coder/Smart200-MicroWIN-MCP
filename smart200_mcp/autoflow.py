@@ -92,11 +92,15 @@ def _read(path):
         return raw.decode("utf-8", "replace")
 
 
-def deploy(awl_files, project_path=None, template=None, open_after=False, verify_block=None):
+def deploy(awl_files, project_path=None, template=None, open_after=False,
+           verify_block=None, symbols=None):
     """把若干 AWL 块部署进一个工程并四关验证。
 
     awl_files: AWL 文件路径列表（有依赖关系时，被依赖的块排前面：
                中断程序/被调用子程序 要在引用它们的块之前导入）
+    symbols: {符号名: 绝对地址}，如 {"电机启动": "I0.0", "电机运行": "Q0.0"}。
+             会在导入程序【之前】把这些地址所在的行改名，程序里就能直接用符号名。
+             ⚠ 带符号时必须用 SAVEAS 落盘 —— PRJ_Save 不保存变量表（实测：存完重开符号没了）。
     verify_block: 已废弃 —— 现在每个块都各自验，不需要指定。传了只作提示。
     返回 dict：四关结果 + 是否整体通过。
     """
@@ -178,11 +182,20 @@ def deploy(awl_files, project_path=None, template=None, open_after=False, verify
             os.remove(p)
 
     # ---- 第2、3、4 关的数据一次注入全部取回 ----
-    cmds = ["IMPORTPOU " + f for f in awl_files]
+    # 符号必须在导入程序之前设好，否则程序里的符号名解析不了 → 整个网络变无效程序段
+    cmds = ["SYMSET %s|%s" % (addr, name) for name, addr in (symbols or {}).items()]
+    if symbols:
+        cmds.append("GVTCOMPILE x")
+    cmds += ["IMPORTPOU " + f for f in awl_files]
     cmds.append("COMPILE")
     cmds += ["VALIDATE %s|0" % blocks[f] for f in awl_files]
     cmds += ["EXPORT %s|%s" % (blocks[f], out_awl[f]) for f in awl_files]
-    cmds.append("SAVE")
+    # 带符号时必须 SAVEAS：PRJ_Save 不落盘变量表（实测存完重开符号全没）。
+    # SAVEAS 到临时文件，实例退出后再替换回去。
+    # 临时文件必须保持同样的扩展名 —— SAVEAS 是按扩展名认格式的
+    _stem, _ext = os.path.splitext(project_path)
+    tmp_proj = (_stem + "_saveas_tmp" + _ext) if symbols else None
+    cmds.append(("SAVEAS " + tmp_proj) if symbols else "SAVE")
 
     pid = engine.launch_instance(project_path)
     try:
@@ -191,7 +204,12 @@ def deploy(awl_files, project_path=None, template=None, open_after=False, verify
         if not open_after:
             engine.kill_instance(pid)
 
+    if symbols and tmp_proj and os.path.exists(tmp_proj):
+        os.replace(tmp_proj, project_path)
+
     report["detail"]["log"] = enginelog.ret_lines(log)
+    if symbols:
+        report["detail"]["symbols"] = enginelog.symbols(log)
 
     # 脚本没跑完 = 软件中途崩了或超时，后面的判据全都不可信
     if not enginelog.done(log):
@@ -199,8 +217,13 @@ def deploy(awl_files, project_path=None, template=None, open_after=False, verify
         report["detail"]["fatal"] = "引擎脚本未跑完（无 __DONE__）—— 软件可能中途崩溃或超时"
         return report
 
-    # ---- 第2关：导入 + 编译 ----
+    # ---- 第2关：导入 + 编译（含符号是否真的设上）----
     ok2 = enginelog.imports_ok(log, awl_files) and enginelog.compiled(log)
+    if symbols and not enginelog.symbols_ok(log, symbols):
+        ok2 = False
+        report["detail"]["symbol_hint"] = (
+            "有符号没设上（多半是地址在 I/O 变量表里找不到对应行）。"
+            "未定义的符号名不会报编译错，而是让整个网络变成无效程序段。")
     report["stage2_compile"] = "PASS" if ok2 else "FAIL"
     if not ok2:
         report["detail"]["imports"] = enginelog.imports(log)
@@ -296,3 +319,28 @@ def open_project(project_path, foreground=True):
         except Exception:
             pass
     return pid
+
+def set_symbols(project_path, symbols):
+    """只改符号表，不动程序。symbols = {符号名: 绝对地址}。
+
+    原理：I/O 变量表里每个 I/O 点本来就列好了、地址是现成的，所以是【改那一行的名字】，
+    不是新建行 —— 在空行上 SetAddressValue 恒报 6019，新行设不了地址。
+    落盘必须 SAVEAS：PRJ_Save 不保存变量表（实测存完重开符号全没）。
+    """
+    project_path = os.path.abspath(project_path)
+    if not os.path.exists(project_path):
+        raise FlowError("工程不存在：" + project_path)
+    stem, ext = os.path.splitext(project_path)
+    tmp = stem + "_saveas_tmp" + ext
+    cmds = ["SYMSET %s|%s" % (addr, name) for name, addr in symbols.items()]
+    cmds += ["GVTCOMPILE x", "SAVEAS " + tmp]
+    pid = engine.launch_instance(project_path)
+    try:
+        log = engine.run_script(pid, cmds)
+    finally:
+        engine.kill_instance(pid)
+    if os.path.exists(tmp):
+        os.replace(tmp, project_path)
+    return {"symbols": enginelog.symbols(log),
+            "all_ok": enginelog.symbols_ok(log, symbols) and enginelog.done(log),
+            "completed": enginelog.done(log)}
