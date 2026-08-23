@@ -9,9 +9,13 @@
 红线：只对【自己启动的独立实例】注入，绝不注入用户正在编辑的进程。
 """
 
+import ctypes
+import ctypes.wintypes as wintypes
 import os
 import subprocess
 import time
+
+from . import enginelog
 
 BASE = r"E:\Smart200_Mcp\native\bootstrap"
 INJECTOR = r"E:\Smart200_Mcp\native\injector\bin\Release\net8.0\win-x86\injector.exe"
@@ -20,11 +24,58 @@ CMD_FILE = os.path.join(BASE, "inject_cmd.txt")
 RESULT_FILE = os.path.join(BASE, "inject_result.txt")
 MWSMART = r"D:\smart200\MWSmartV3.exe"
 
-USER_PROTECTED_PIDS = set()
+# 红线的机器强制点：只允许注入【本模块自己启动的】实例。
+# 以前这里是一个空的 USER_PROTECTED_PIDS 黑名单，从没人往里加 PID —— 等于没有防护。
+# 改成白名单：不在这里面的 PID 一律拒绝，用户手上那个实例天然进不来。
+_OWN_PIDS = set()
 
 
 class EngineError(Exception):
     pass
+
+
+def _smartapp_title(pid):
+    """取该 PID 的 SmartApp 主窗口标题；没有窗口返回 None。"""
+    found = []
+
+    def cb(h, _):
+        p = wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(h, ctypes.byref(p))
+        if p.value == pid:
+            cls = ctypes.create_unicode_buffer(64)
+            ctypes.windll.user32.GetClassNameW(h, cls, 63)
+            if cls.value == "SmartApp":
+                buf = ctypes.create_unicode_buffer(512)
+                ctypes.windll.user32.GetWindowTextW(h, buf, 511)
+                found.append(buf.value)
+                return False
+        return True
+
+    CB = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    ctypes.windll.user32.EnumWindows(CB(cb), 0)
+    return found[0] if found else None
+
+
+def wait_ready(pid, project_path, timeout=90, settle=1.5):
+    """等实例把工程真的载入。
+
+    判据：主窗口标题里出现工程主名（实测启动 ~0.8s 出窗口、~16s 标题才带工程名）。
+    以前是死等 sleep(26)：慢机器上不够会注入到没载完的进程，快机器上白等 10 秒。
+
+    坑：标题带不带扩展名不一致 —— `.smart` 显示成 "x.smart - STEP 7..."，
+    而 `.smartV3` 显示成 "x - STEP 7..."。所以只认【去掉扩展名的主名】。
+    """
+    stem = os.path.splitext(os.path.basename(project_path))[0]
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        t = _smartapp_title(pid)
+        if t and stem in t:
+            time.sleep(settle)
+            return time.time()
+        time.sleep(0.3)
+    raise EngineError(
+        "等了 %ds 主窗口标题仍未出现工程名 %r（当前标题 %r）—— 工程可能没打开成功"
+        % (timeout, stem, _smartapp_title(pid)))
 
 
 def _read_result():
@@ -44,17 +95,24 @@ def _wait_done(timeout=60):
     return _read_result()
 
 
-def launch_instance(project_path, wait=26):
-    """启动【独立】实例载入工程，返回 PID。"""
+def launch_instance(project_path, timeout=90):
+    """启动【独立】实例载入工程，等到工程真的载入后返回 PID。"""
+    if not os.path.exists(project_path):
+        raise EngineError(f"工程不存在：{project_path}")
     p = subprocess.Popen([MWSMART, project_path])
-    time.sleep(wait)
-    if p.poll() is not None:
-        raise EngineError(f"实例启动后立即退出：{project_path}")
+    _OWN_PIDS.add(p.pid)
+    try:
+        wait_ready(p.pid, project_path, timeout=timeout)
+    except EngineError:
+        if p.poll() is not None:
+            raise EngineError(f"实例启动后立即退出：{project_path}")
+        raise
     return p.pid
 
 
 def kill_instance(pid):
     subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+    _OWN_PIDS.discard(pid)
 
 
 def run_script(pid, commands):
@@ -62,8 +120,10 @@ def run_script(pid, commands):
         ["EXPORT 初始化|E:\\out\\a.awl", "XML 地址判定|E:\\out\\b.xml", "COMPILE", "SAVE"]
     返回结果日志。这是全部动作的唯一入口。
     """
-    if pid in USER_PROTECTED_PIDS:
-        raise EngineError(f"PID {pid} 是用户正在编辑的实例，拒绝注入")
+    if pid not in _OWN_PIDS:
+        raise EngineError(
+            f"拒绝注入 PID {pid}：只允许注入本模块自己启动的实例。"
+            f"用户正在编辑的实例绝不能被注入 —— 请先 launch_instance() 起一个独立实例。")
     if not os.path.exists(DLL):
         raise EngineError(f"找不到引擎 DLL: {DLL}")
     # 防护：命令里出现控制字符 = 上游路径拼接时反斜杠转义塌缩（如 \f \n \t），
@@ -79,7 +139,9 @@ def run_script(pid, commands):
         os.remove(RESULT_FILE)
     with open(CMD_FILE, "wb") as f:
         f.write(body)
-    subprocess.run([INJECTOR, str(pid), DLL], capture_output=True, text=True, timeout=60)
+    # 注意别加 text=True：注入器输出是 GBK，用默认解码会在读取线程里抛
+    # UnicodeDecodeError（线程内异常，主流程看不见，只在 stderr 冒一堆栈）。
+    subprocess.run([INJECTOR, str(pid), DLL], capture_output=True, timeout=60)
     log = _wait_done()
     if "g_Retrieve=" not in log:
         raise EngineError(f"脚本未触发：\n{log}")
@@ -115,8 +177,7 @@ def compile_and_export(project_path, names_to_paths):
             os.remove(p)
     cmds = ["COMPILE"] + [f"EXPORT {n}|{p}" for n, p in names_to_paths.items()]
     log, _ = _run_on_project(project_path, cmds)
-    compiled = "COMPILE ret=0" in log
-    return compiled, {p: os.path.exists(p) for p in names_to_paths.values()}, log
+    return enginelog.compiled(log), {p: os.path.exists(p) for p in names_to_paths.values()}, log
 
 
 def import_and_compile(project_path, awl_files, save=True):
@@ -129,6 +190,8 @@ def import_and_compile(project_path, awl_files, save=True):
     if save:
         cmds.append("SAVE")
     log, _ = _run_on_project(project_path, cmds)
-    imported = {p: (f"IMPORTPOU {p} ret=0" in log) for p in awl_files}
-    compiled = "COMPILE ret=0" in log
-    return imported, compiled, log
+    # 判据统一走 enginelog：日志里路径是【带引号】的（IMPORTPOU 'x.awl' ret=0），
+    # 以前这里按无引号拼串匹配，导致导入成功也恒报 False。
+    got = enginelog.imports(log)
+    imported = {p: got.get(os.path.normcase(p), False) for p in awl_files}
+    return imported, enginelog.compiled(log), log

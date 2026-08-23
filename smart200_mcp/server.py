@@ -13,7 +13,7 @@ from mcp.server import MCPServer
 
 from . import container, online, project, ui, awl, engine, stlcheck, autoflow
 
-mcp = MCPServer("smart200", version="0.2.0")
+mcp = MCPServer("smart200", version="0.3.0")
 
 
 # ---------- 离线工程解析 ----------
@@ -170,29 +170,42 @@ def smart_compile_and_export(project_path: str, blocks: dict) -> dict:
 
 @mcp.tool()
 def smart_check_stl(awl_path: str) -> dict:
-    """静态检查 AWL 的网络结构，抓"无效程序段"（软件里会标红的那种）。
+    """【离线秒级预检】静态检查 AWL 的网络结构，抓"无效程序段"。
 
-    ⚠ 重要：软件的编译 ret=0 **不代表没有无效程序段** —— 无效网络会被排除在编译外，
-    其余照常编译，所以只看编译结果会被骗。写完 AWL 必须先过这一关。
+    不启动软件，写完 AWL 先过这一关，省得白跑一趟部署。
+    规则：一个 Network 只能有一条独立逻辑行(rung)。已双向验证（坏样本 9/9、好样本零误报）。
 
-    规则：一个 Network 只能有一条独立逻辑行(rung)。已用真实案例双向验证
-    （已知坏样本精确命中 9/9、已知好样本零误报）。
+    注意这是【启发式规则】，权威判据是 smart_validate_project（问软件本人）。
+    另：软件的编译 ret=0 **不代表没有无效程序段** —— 无效网络被排除在编译之外。
     """
     return stlcheck.check_file(awl_path)
 
 
 @mcp.tool()
+def smart_validate_project(project_path: str, block_names: list[str]) -> dict:
+    """【权威判据】问软件本人：这些块里有没有"无效程序段"（打开工程会标红的那种）。
+
+    走引擎 POU_IsValidNet 逐网络判定，是软件自己的答案，不是静态猜测。
+    已用真实案例验证：已知坏样本精确报出 9 个无效网络、已知好样本 0 误报。
+    只读 —— 不导入、不编译、不保存。返回每个块的网络总数与无效网络号。
+    """
+    return autoflow.validate_project(project_path, block_names)
+
+
+@mcp.tool()
 def smart_deploy(awl_files: list[str], project_path: str = "",
                  verify_block: str = "", open_after: bool = False) -> dict:
-    """【全自动·推荐入口】把 AWL 块部署进工程并做三关验证，一步到位。
+    """【全自动·推荐入口】把 AWL 块部署进工程并做四关验证，一步到位。
 
-    三关（任何一关不过都会如实报 FAIL，不吹成功）：
-      1 静态结构  抓无效程序段
-      2 导入+编译 抓语法/交叉引用错误（如 CALL/ATCH 指向不存在的块）
-      3 往返导出  抓被软件静默丢弃的指令
+    四关（任何一关不过都会如实报 FAIL，不吹成功）：
+      1 静态预检   离线秒级，先挡明显问题
+      2 导入+编译  抓语法/交叉引用错误（CALL/ATCH 指向不存在的块）
+      3 引擎真值   问软件本人 POU_IsValidNet 有无无效程序段 ← 权威判据
+      4 往返导出   逐块核对指令与网络数，抓被软件静默丢弃的内容
 
-    awl_files 顺序有讲究：被依赖的块排前面（中断程序、被 CALL 的子程序 要在
-    引用它们的块之前）。project_path 留空则自动建临时工程。
+    awl_files 顺序：主程序(ORGANIZATION_BLOCK/OB1)会自动排到最前（导入 OB1 会替换
+    整个程序集）；其余按依赖排，被 CALL 的子程序、被 ATCH 的中断程序排在引用者之前。
+    project_path 留空则用【软件自带的空白模板】新建（不含任何已有工程内容）。
     open_after=True 会把工程留开给人看。
     """
     return autoflow.deploy(awl_files,
@@ -234,6 +247,7 @@ def smart_run_workflow(project_path: str, commands: list[str]) -> dict:
       "IMPORTPOU AWL文件路径"  导入 AWL 程序块（改动真实落进工程，已闭环验证）
       "IMPORT 文件路径"        通用导入
       "COMPILE"                编译整个工程
+      "VALIDATE 块名|0"        问引擎该块有无无效程序段（权威判据）
       "SAVE"                   保存工程
       "SAVEAS 路径"            另存工程
     返回执行日志里各步的返回码摘要。这是最灵活的入口，可把"导入→编译→导出确认"串成一条。

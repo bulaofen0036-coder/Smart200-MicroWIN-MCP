@@ -109,3 +109,63 @@ smarthook_WORKING 在分发前先 `PRJ_GetCurrentProject` 拿工程号再 `PRJ_S
 ### AWL 就是导出格式
 标准 STL 文本（GBK / CRLF）：`SUBROUTINE_BLOCK 名:SBRn` / `Network n` /
 `助记符 操作数` / `END_SUBROUTINE_BLOCK`。离线解析器 smart200_mcp/awl.py 可结构化+程序分析。
+
+## 无效程序段的权威判据：POU_IsValidNet（2026-08-23 打通）
+
+```
+?POU_IsValidNet@MWRetrieve@@QBEJABVMW_ID@@GAAHW4LANGUAGE@@@Z
+long __thiscall MWRetrieve::POU_IsValidNet(MW_ID const&, unsigned short net,
+                                          int& out, enum LANGUAGE) const
+```
+
+调用要点：
+
+1. **网络索引从 0 起**，i 对应 AWL 里的 `Network i+1`。传 i=cnt 返 `0xA00007D3`(越界)，
+   别把它当成"最后一段无效"。这个偏移一开始就是靠"引擎给的集合正好是真值整体减 1"看出来的。
+2. `out==0` 表示该网络无效；`ret!=0` 表示调用本身出错，两者要分开报。
+3. LANGUAGE 传 **0**（梯形图）。实测 0 与 2 结果一致；**传 1 会把所有网络都判成无效**，别用。
+4. 网络总数用 `?POU_GetNetCnt@MWRetrieve@@QBEJABVMW_ID@@AAG@Z`，MW_ID 走引用，实测准确。
+
+验证：坏样本（用户截图确认 9 个红网络）精确命中 9/9，好样本 0 误报，
+且与静态 `stlcheck.py` 独立得出同一结论。
+
+### 别用 LAD_GetNetworkDimensions
+
+`?LAD_GetNetworkDimensions@MWRetrieve@@QAEJVMW_ID@@GPAE11@Z` 看名字像是能用
+（问梯形图排版尺寸，画不出的就是无效网络），实测**恒返 `0xA00007D3` 且调用两三次后进程直接死**
+（日志断在半截、没有 `__DONE__`）。区别在于它的 MW_ID 是**按值**传的，
+而能用的那两个都是**按引用**。要拿真值就用 `POU_IsValidNet`。
+
+## 这一轮踩出来的其它坑（2026-08-23）
+
+- **日志编码不能混**：源码用 `/utf-8` 编译，字面量是 UTF-8；但命令文件里的块名/路径是 GBK 字节，
+  直接 `%s` 打进日志 → 同一个文件里两种编码。Python 侧按 UTF-8 解，中文块名成乱码，
+  于是"明明验过的块"被判成没验过、整关误报 FAIL。解法：所有来自命令文件的串先过 
+  `MultiByteToWideChar(936) -> WideCharToMultiByte(CP_UTF8)` 再打日志。
+
+- **主程序关键字是 `ORGANIZATION_BLOCK`**，不是 `PROGRAM_BLOCK`。写错时 `PRJ_ImportPouFile` 
+  **返回 ret=0 但什么都不导入** —— 典型的"报成功其实没做"，只有往返导出核对才抓得到。
+
+- **导入 OB1 = 替换整个程序集**：先导入的子程序会被抹掉，随后编译报 `-1610612428`(交叉引用)，
+  但四条 IMPORTPOU 全是 ret=0，看日志找不出真因。主程序必须排在最前面。
+  这与"导出 OB1 会把所有块一起导出"是对称的 —— OB1 那份就代表整个程序。
+
+- **导出连依赖一起出**：`PRJ_ExportPOU` 最后那个 bool 传 true 时，导出文件里会有目标块 +
+  它 CALL/ATCH 的块。核对网络数前必须先切出目标块那一段。
+
+- **窗口标题带不带扩展名不一致**：`.smart` 显示 `x.smart - STEP 7...`，
+  `.smartV3` 显示 `x - STEP 7...`。判就绪只能认**去掉扩展名的主名**。
+  实测启动 ~0.8s 出窗口、**~16s 标题才带工程名**（此前是死等 `sleep(26)`）。
+
+- **注入器输出别用 `text=True`**：它是 GBK，默认解码会在 subprocess 读取线程里抛
+  `UnicodeDecodeError` —— 线程内异常，主流程看不见，只在 stderr 冒一堆栈。
+
+### 还没拿下
+
+**符号表建不了**。`SYM_InsertSymbol`（有个全字符串参数的重载，很好调）、`SYM_GetSymbolRows`、
+`SYM_SaveSymbolTable` 都在，但入口卡在拿不到符号表的 MW_ID：
+`SYM_FindSymbol("Always_On", ...)` 恒返 `-1610610729`、表 id 全零（`SetCurrentProject` 已做过）。
+`.sdf` 文本走 `PRJ_Import` 也被拒（`-1610610033`，带表头 CSV 和 TAB 分隔两种形态都试过）。
+下一步应该是拿 dbgcap 挂在软件的"符号表"界面动作上，抓真实的 MW_ID 与调用顺序。
+
+附带确认：**未定义的符号名不会让编译报错，而是让整个网络变成无效程序段** —— 第 3 关抓得到。

@@ -15,6 +15,23 @@ static void Log(const char* fmt, ...) {
     if (h != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(h, buf, (DWORD)strlen(buf), &w, nullptr); WriteFile(h, "\r\n", 2, &w, nullptr); CloseHandle(h); }
 }
 
+// 日志编码统一成 UTF-8。
+// 坑：源码用 /utf-8 编译，所以字面量是 UTF-8；但命令文件里的块名/路径是 GBK 字节，
+// 直接 %s 打进去 → 同一个日志文件里两种编码混着，Python 侧按 UTF-8 解就成乱码，
+// 块名匹配不上，明明验过的块被判成"没验过"。所有来自命令文件的串都先过这个转换。
+struct U8 {
+    char b[1024];
+    explicit U8(const char* gbk) {
+        b[0] = 0;
+        if (!gbk) return;
+        wchar_t w[512];
+        int n = MultiByteToWideChar(936, 0, gbk, -1, w, 512);
+        if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, -1, b, sizeof(b), nullptr, nullptr);
+        else { strncpy_s(b, gbk, sizeof(b) - 1); }
+    }
+    const char* c() const { return b; }
+};
+
 struct CStr {
     uint8_t* block; char** slot;
     CStr(const char* s){ int n=(int)strlen(s); block=(uint8_t*)malloc(16+n+1);
@@ -163,13 +180,13 @@ static void DoWork() {
                     unsigned char id[16]={0}; if(find){ CStr c(nm); find(gR,c.obj(),id); }
                     CStr p(op);
                     int r = (ln[0]=='X') ? exml(gR,id,p.obj()) : epou(gR,id,p.obj(),true);
-                    Log("script EXPORT '%s' -> %s ret=%d", nm, op, r);
+                    Log("script EXPORT '%s' -> %s ret=%d", U8(nm).c(), U8(op).c(), r);
                 } else if(strcmp(ln,"IMPORT")==0){
                     // PRJ_Import(CString const& path, unsigned short& out) —— 简单入口
                     typedef int (__thiscall *Imp)(void*, void*, unsigned short*);
                     Imp imp=(Imp)Sym("?PRJ_Import@MWStore@@QAEJABV?$CStringT@DV?$StrTraitMFC_DLL@DV?$ChTraitsCRT@D@ATL@@@@@ATL@@AAG@Z");
                     if(!imp){ Log("script IMPORT: 无 PRJ_Import"); }
-                    else { CStr p(arg); unsigned short w=0; int r=imp(gS,p.obj(),&w); Log("script IMPORT '%s' ret=%d out=%u", arg, r, w); }
+                    else { CStr p(arg); unsigned short w=0; int r=imp(gS,p.obj(),&w); Log("script IMPORT '%s' ret=%d out=%u", U8(arg).c(), r, w); }
                 } else if(strcmp(ln,"IMPORTPOU")==0){
                     // PRJ_ImportPouFile(CString path, vector<UDT> const&, bool const&, vector<Log>&)
                     // 空 vector = {null,null,null}（12B 零）；bool 用指针。
@@ -182,14 +199,71 @@ static void DoWork() {
                         void* emptyVec2[3]={0,0,0};
                         unsigned char bfalse=0;
                         int r=imp(gS, p.obj(), emptyVec1, &bfalse, emptyVec2);
-                        Log("script IMPORTPOU '%s' ret=%d", arg, r);
+                        Log("script IMPORTPOU '%s' ret=%d", U8(arg).c(), r);
                     }
                 } else if(strcmp(ln,"COMPILE")==0){
                     int r=comp(gS); Log("script COMPILE ret=%d", r);
                 } else if(strcmp(ln,"SAVE")==0){
                     int r=save(gR); Log("script SAVE ret=%d", r);
                 } else if(strcmp(ln,"SAVEAS")==0){
-                    CStr p(arg); int r=saveas(gR,p.obj()); Log("script SAVEAS '%s' ret=%d", arg, r);
+                    CStr p(arg); int r=saveas(gR,p.obj()); Log("script SAVEAS '%s' ret=%d", U8(arg).c(), r);
+                } else if(strcmp(ln,"SYMFIND")==0){
+                    // 探路：按符号名查它所在的符号表 MW_ID 与行号
+                    typedef int (__thiscall *FindSym)(void*, void*, unsigned char*, unsigned short*);
+                    typedef int (__thiscall *GetRows)(void*, const unsigned char*, unsigned short*);
+                    FindSym fs=(FindSym)Sym("?SYM_FindSymbol@MWStore@@QAEJABV?$CStringT@DV?$StrTraitMFC_DLL@DV?$ChTraitsCRT@D@ATL@@@@@ATL@@AAVMW_ID@@AAG@Z");
+                    GetRows gr=(GetRows)Sym("?SYM_GetSymbolRows@MWStore@@QAEJABVMW_ID@@AAG@Z");
+                    if(!fs){ Log("script SYMFIND '%s' ERR=无 SYM_FindSymbol", U8(arg).c()); }
+                    else {
+                        CStr nm(arg); unsigned char id[16]={0}; unsigned short row=0xFFFF;
+                        int r=fs(gS, nm.obj(), id, &row);
+                        char hx[40]; for(int k=0;k<16;k++) sprintf_s(hx+k*2,3,"%02x",id[k]);
+                        unsigned short rows=0xFFFF; int rr=-1;
+                        if(gr) rr=gr(gS, id, &rows);
+                        Log("script SYMFIND '%s' ret=%d table=%s row=%u rows_ret=%d rows=%u",
+                            U8(arg).c(), r, hx, row, rr, rows);
+                    }
+                } else if(strcmp(ln,"VALIDATE")==0){
+                    // 引擎自己的"无效程序段"真值：POU_IsValidNet 逐网络问软件本人。
+                    // MW_ID 走【引用】传参(和已验证可用的 POU_GetNetCnt 同款)，
+                    // 别用 LAD_GetNetworkDimensions —— 那个按值传 MW_ID，恒返 0xA00007D3 且会崩。
+                    typedef int (__thiscall *GetNetCnt)(void*, const unsigned char*, unsigned short*);
+                    typedef int (__thiscall *IsValidNet)(void*, const unsigned char*, unsigned short, int*, int);
+                    GetNetCnt getCnt=(GetNetCnt)Sym("?POU_GetNetCnt@MWRetrieve@@QBEJABVMW_ID@@AAG@Z");
+                    IsValidNet isVal=(IsValidNet)Sym("?POU_IsValidNet@MWRetrieve@@QBEJABVMW_ID@@GAAHW4LANGUAGE@@@Z");
+                    if(!getCnt||!isVal||!find){
+                        Log("script VALIDATE '%s' ERR=API缺失 cnt=%p val=%p find=%p", U8(arg).c(), getCnt, isVal, find);
+                    } else {
+                        // 语言枚举可选：写成 "VALIDATE 块名|0"；不写默认 0(梯形图)
+                        int g_lang=0; char* lb=strchr(arg,'|');
+                        if(lb){ *lb=0; g_lang=atoi(lb+1); }
+                        unsigned char id[16]={0};
+                        CStr nm(arg); int fr=find(gR, nm.obj(), id);
+                        bool zero=true; for(int k=0;k<16;k++) if(id[k]) { zero=false; break; }
+                        if(zero){
+                            Log("script VALIDATE '%s' ERR=块未找到 find_ret=%d", U8(arg).c(), fr);
+                        } else {
+                            unsigned short cnt=0; int cr=getCnt(gR, id, &cnt);
+                            if(cr!=0){ Log("script VALIDATE '%s' ERR=取网络数失败 ret=%d", U8(arg).c(), cr); }
+                            else {
+                                // 网络索引【从 0 起】：实测 i 对应 AWL 里的 Network i+1。
+                                // 传 i=cnt 会返 0xA00007D3(越界)，别把它当成"最后一段无效"。
+                                int bad=0;
+                                for(unsigned short i=0;i<cnt;i++){
+                                    int out=-999;
+                                    int r=isVal(gR, id, i, &out, g_lang);
+                                    if(r!=0){
+                                        Log("script VALIDATE '%s' net=%u ERR ret=%d", U8(arg).c(), (unsigned)(i+1), r);
+                                        bad++;
+                                    } else if(out==0){
+                                        Log("script VALIDATE '%s' net=%u INVALID", U8(arg).c(), (unsigned)(i+1));
+                                        bad++;
+                                    }
+                                }
+                                Log("script VALIDATE '%s' nets=%u invalid=%d lang=%d", U8(arg).c(), cnt, bad, g_lang);
+                            }
+                        }
+                    }
                 } else Log("script: 未知命令 %s", ln);
             }
             fclose(mf);

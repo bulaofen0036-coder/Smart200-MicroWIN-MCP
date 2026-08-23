@@ -45,53 +45,80 @@ claude mcp add smart200 -s user -- python E:/Smart200_Mcp/run.py
 ```
 
 缺这个文件不影响 MCP 主功能，只会让 `tests/test_all.py` 相关小节**如实打印 SKIP**
-（不是静默通过）。`smart_deploy` 不传 `project_path` 时需要 `template_project`。
+（不是静默通过）。`smart_deploy` 新建工程默认用**软件自带的空白模板**
+（`template.smartV3`，在软件安装目录下），不需要 `template_project`；
+配了它只是为了"以某个已有工程为底"。
 
 `smart200_mcp/engine.py` 顶部还有两条本机绝对路径需按实际改：`INJECTOR`、`MWSMART`。
 
-## 工具（20 个）
+## 工具（21 个）
 
-**全自动主入口**：`smart_deploy`（三关验证部署）`smart_check_stl`（静态查无效程序段）
-`smart_open_project` `smart_run_workflow` `smart_import_blocks` `smart_export_blocks`
-`smart_compile_and_export` `smart_awl_analyze`
+**全自动主入口**：`smart_deploy`（四关验证部署）`smart_validate_project`（问引擎要真值）
+`smart_check_stl`（离线预检）`smart_open_project` `smart_run_workflow`
+`smart_import_blocks` `smart_export_blocks` `smart_compile_and_export` `smart_awl_analyze`
 **离线**：`smart_probe` `smart_list_projects` `smart_analyze` `smart_symbols`
 `smart_function_blocks` `smart_compare`
 **在线**：`smart_plc_info` `smart_plc_read` `smart_plc_write`
 **界面**：`smart_ui_project_tree` `smart_ui_output` `smart_ui_compile`
 
-## 三关验证（`smart_deploy`）
+## 四关验证（`smart_deploy`）
 
-**血泪教训：软件的 `COMPILE ret=0` 不能单独当通过判据。** 无效程序段会被标红并
+**血泪教训：软件的 `COMPILE ret=0` 不能当通过判据。** 无效程序段会被标红并
 **排除在编译之外**，其余照常编译 → 返回成功，据此报"已验证"会骗人（真踩过）。
 
-1. **静态结构**（`stlcheck.py`）—— 抓"无效程序段"。铁律：一个 Network 只能有一条独立
-   逻辑行。规则用真实样本双向验证：已知坏样本精确命中 9/9、已知好样本零误报。
-2. **导入 + 编译** —— 抓语法与交叉引用错误（`CALL`/`ATCH` 指向不存在的块）。
-3. **往返导出核对** —— 抓被软件静默丢弃的指令。
+| 关 | 干什么 | 性质 |
+|---|---|---|
+| 1 静态预检 | `stlcheck.py`：一个 Network 只能有一条 rung | 离线秒级，**启发式** |
+| 2 导入+编译 | 抓语法与交叉引用错误（`CALL`/`ATCH` 指向不存在的块） | 必要不充分 |
+| 3 **引擎真值** | `POU_IsValidNet` 逐网络问软件本人 | **权威判据** |
+| 4 往返导出 | 逐块核对指令集 + 网络数，抓静默丢弃 | 抓"说成功其实没做" |
 
-任何一关不过都如实报 FAIL。`awl_files` 顺序有讲究：被依赖的块（中断程序、被 `CALL`
-的子程序）要排在引用它们的块之前；**一个 .awl 含多个 BLOCK 时导入只吃到一个**，要拆文件。
+第 3 关才是权威：第 1 关是我写的规则、可能有盲区，第 3 关是软件自己的答案。
+两者在已知样本上完全一致（坏样本精确命中 9/9、好样本零误报），不一致时以第 3 关为准。
+
+### 用 AWL 干活必须知道的几条（都是实测踩出来的）
+
+- **主程序的关键字是 `ORGANIZATION_BLOCK`，不是 `PROGRAM_BLOCK`**。写错了
+  `IMPORTPOU` 照样返回 `ret=0`，但**什么都没导进去**（第 4 关才抓得到）。
+- **导入 OB1 会替换整个程序集** —— 先导入的子程序会被抹掉。所以主程序必须排最前
+  （`smart_deploy` 会自动重排并在报告里说明）。这与"导出 OB1 会把所有块一起导出"对称。
+- 其余按依赖排：被 `CALL` 的子程序、被 `ATCH` 的中断程序要在引用它们的块之前。
+- **一个 .awl 含多个 BLOCK 时导入只吃到一个** → 拆成多个文件。
+- **导出会连依赖块一起导出**（`PRJ_ExportPOU` 最后那个 bool 传的 true），所以导出的
+  .awl 里常有好几个 BLOCK —— 核对时要先切出目标块那一段，否则网络数对不上。
+- **未定义的符号名会让整个网络变成无效程序段**（不是编译报错），第 3 关能抓到。
 
 ## 安全红线（照搬 TIA MCP 的教训）
 
-1. UI 层**只接管已打开的实例**，绝不替你打开/新建工程去顶掉正在编辑的内容
-2. 绝不按进程名批量杀 `MWSmartV3.exe`
-3. 写 PLC、点编译等会改变状态的操作，一律要求显式 `confirm=True`
-4. 找不到控件/解不开文件就抛异常，**绝不静默返回空**——那会把失败伪装成成功
+1. **注入只允许打到本模块自己启动的实例**（`engine._OWN_PIDS` 白名单，机器强制）。
+   以前这里是个从没人往里加 PID 的黑名单，等于没有防护。
+2. UI 层**只接管已打开的实例**，绝不替你打开/新建工程去顶掉正在编辑的内容
+3. 绝不按进程名批量杀 `MWSmartV3.exe`
+4. 写 PLC、点编译等会改变状态的操作，一律要求显式 `confirm=True`
+5. 找不到控件/解不开文件就抛异常，**绝不静默返回空**——那会把失败伪装成成功
 
 ## 测试
 
 ```bash
-python tests/test_all.py       # 容器/解析/地址层
-python tests/test_stlcheck.py  # 无效程序段检查器防回归
+python tests/test_all.py        # 容器/解析/地址层
+python tests/test_stlcheck.py   # 无效程序段静态检查器防回归
+python tests/test_enginelog.py  # 引擎日志判据防回归
 ```
 
-`test_all` 含 3 个必错哨兵（V3 必须被拒、损坏文件必须被拒、非法地址必须被拒）。
-`test_stlcheck` 用已知答案样本双向验证，另含 3 个反向哨兵 + 4 个正向哨兵。
-**哨兵若 PASS 就说明测试本身坏了。**
+三套都含**必错哨兵**（哨兵若 PASS 就说明测试本身坏了）：
+`test_all` 3 个、`test_stlcheck` 3 反向 + 4 正向、`test_enginelog` 7 个。
+
+`test_enginelog` 是补的欠账：判据以前散在 `engine`/`autoflow` 里且零覆盖，
+于是"日志里路径带引号、判据按不带引号匹配"的 bug 长期存活（导入成功却恒报失败）。
 
 ## 已知边界
 
+- **建不了符号表**：`SYM_InsertSymbol` 等 API 都在，但 `SYM_FindSymbol` 恒返错、
+  表 MW_ID 全零，拿不到符号表句柄；`.sdf` 走 `PRJ_Import` 也被拒。
+  → 生成的程序目前只能用**绝对地址**；读已有工程时符号名是正常带出来的。
+- **枚举不了工程里有哪些块**：`POU_GetCount` 按 MW_IDType 枚举恒返 0，只能按名字查。
+  想知道有哪些块得走 UI 层 `smart_ui_project_tree`。
+- 下载到 PLC 未打通（`PRJ_Download` 未接线，snap7 层未经真机验证）
 - 不还原逐网络 LAD/STL 逻辑（定长记录字段布局未逆向完，强行输出等于编造）
 - 离线拿不到当前 CPU 型号（工程存模块 ID），改由 UI 层读
 - `project_name` 是工程内部名，可能与文件名不同（另存改名后不同步），两者都对

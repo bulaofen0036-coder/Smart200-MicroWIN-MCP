@@ -1,12 +1,16 @@
 """全自动流程：从 AWL 源文件到"工程里可用且验证过"的一条龙。
 
 设计原则（血泪换来）：
-  软件的 COMPILE ret=0 **不能单独作为通过判据** —— 无效程序段会被标红并排除在
-  编译之外，其余照常编译，所以 ret=0 会骗人。必须三关都过：
+  软件的 COMPILE ret=0 **不能作为通过判据** —— 无效程序段会被标红并排除在
+  编译之外，其余照常编译，所以 ret=0 会骗人。必须四关都过：
 
-    第1关 静态结构检查(stlcheck)  —— 抓"无效程序段"(一个网络多条 rung 等)
-    第2关 导入 + 编译 ret=0        —— 抓语法/交叉引用错误
-    第3关 往返导出 + 指令核对      —— 抓被软件静默丢弃的指令
+    第1关 静态预检(stlcheck)   —— 不启动软件，秒级挡掉明显的无效程序段
+    第2关 导入 + 编译 ret=0     —— 抓语法/交叉引用错误(CALL/ATCH 指向不存在的块)
+    第3关 引擎真值(VALIDATE)   —— 逐网络问软件本人 POU_IsValidNet，这是权威判据
+    第4关 往返导出 + 指令核对   —— 抓被软件静默丢弃的指令，【每个块各验各的】
+
+  第3关才是权威：第1关是我写的启发式规则(可能有盲区)，第3关是软件自己的答案。
+  两者在已知样本上一致（坏样本 9/9、好样本 0 误报），不一致时以第3关为准。
 
   任何一关不过就如实报错，不吹"成功"。
 """
@@ -15,10 +19,20 @@ import os
 import re
 import shutil
 
-from . import engine, localcfg, stlcheck
+from . import engine, enginelog, localcfg, stlcheck
 
-# 建新工程用的模板 .smart（本机私有路径，见 .smart200_local.json）
+# 建新工程用的模板。默认用【软件自带的空白模板】——干净、零客户数据。
+# 以前默认是拿一个客户工程当模板，自动建出来的每个工程都带着客户的程序块。
+BLANK_TEMPLATE = r"D:\smart200\template.smartV3"
+# 想以某个已有工程为底，才在 .smart200_local.json 里配 template_project。
 TEMPLATE = localcfg.get("template_project", "")
+
+
+def _pick_template(explicit=None):
+    for cand in (explicit, BLANK_TEMPLATE, TEMPLATE):
+        if cand and os.path.exists(cand):
+            return cand
+    return None
 
 
 class FlowError(Exception):
@@ -26,8 +40,35 @@ class FlowError(Exception):
 
 
 def _block_name(awl_text):
-    m = re.search(r"^(?:SUBROUTINE|PROGRAM|INTERRUPT)_BLOCK\s+(.+?):", awl_text, re.M)
+    m = re.search(r"^(?:SUBROUTINE|PROGRAM|ORGANIZATION|INTERRUPT)_BLOCK\s+(.+?):", awl_text, re.M)
     return m.group(1).strip() if m else None
+
+
+def _section(text, name):
+    """从 AWL 文本里切出【指定块】那一段。
+
+    坑：PRJ_ExportPOU 的最后一个 bool 传 true 表示"连依赖一起导出"，
+    所以导出的 .awl 里可能有好几个 BLOCK（目标块 + 它 CALL/ATCH 的块）。
+    不切段直接数 Network，会把依赖块的网络算进来，误判成"网络数对不上"。
+    """
+    text = text.replace("\r\n", "\n")
+    lines = text.split("\n")
+    head = re.compile(r"^(SUBROUTINE|PROGRAM|ORGANIZATION|INTERRUPT|DATA)_BLOCK\s+(.+?):")
+    start = None
+    for i, l in enumerate(lines):
+        m = head.match(l.strip())
+        if m and m.group(2).strip() == name:
+            start = i
+            kind = m.group(1)
+            break
+    if start is None:
+        return None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if lines[j].strip() == "END_" + kind + "_BLOCK":
+            end = j
+            break
+    return "\n".join(lines[start:end])
 
 
 def _ops(text):
@@ -39,6 +80,10 @@ def _ops(text):
     return out
 
 
+def _net_count(text):
+    return len(re.findall(r"^Network\s+\d+", text.replace("\r\n", "\n"), re.M))
+
+
 def _read(path):
     raw = open(path, "rb").read()
     try:
@@ -48,18 +93,58 @@ def _read(path):
 
 
 def deploy(awl_files, project_path=None, template=None, open_after=False, verify_block=None):
-    """把若干 AWL 块部署进一个工程并三关验证。
+    """把若干 AWL 块部署进一个工程并四关验证。
 
     awl_files: AWL 文件路径列表（有依赖关系时，被依赖的块排前面：
                中断程序/被调用子程序 要在引用它们的块之前导入）
-    project_path: 目标工程（不存在则从 template 复制）
-    verify_block: 用于第3关往返核对的块名（默认取最后一个文件的块名）
-    返回 dict：三关结果 + 是否整体通过。
+    verify_block: 已废弃 —— 现在每个块都各自验，不需要指定。传了只作提示。
+    返回 dict：四关结果 + 是否整体通过。
     """
     report = {"stage1_structure": None, "stage2_compile": None,
-              "stage3_roundtrip": None, "passed": False, "detail": {}}
+              "stage3_engine_validate": None, "stage4_roundtrip": None,
+              "passed": False, "detail": {}}
+    if verify_block:
+        report["detail"]["note"] = "verify_block 已废弃：现在每个块都单独往返核对"
 
-    # ---- 第1关：静态结构检查 ----
+    awl_files = [os.path.abspath(f) for f in awl_files]
+    for f in awl_files:
+        if not os.path.exists(f):
+            raise FlowError(f"AWL 文件不存在：{f}")
+
+    # 每个文件对应的块名 —— 后面三关都按块逐个验，不再只验最后一个
+    blocks = {}
+    for f in awl_files:
+        name = _block_name(_read(f))
+        if not name:
+            raise FlowError(f"{os.path.basename(f)} 里找不到 *_BLOCK 块头，不是合法 AWL")
+        blocks[f] = name
+    report["detail"]["blocks"] = {os.path.basename(f): n for f, n in blocks.items()}
+
+    # 同名块会互相覆盖：后导入的顶掉先导入的，编译随后报交叉引用错，
+    # 但日志上四个 IMPORTPOU 全是 ret=0，很难看出真因 —— 所以提前挡住。
+    dup = {}
+    for f, n in blocks.items():
+        dup.setdefault(n, []).append(os.path.basename(f))
+    dup = {n: fs for n, fs in dup.items() if len(fs) > 1}
+    if dup:
+        raise FlowError(
+            "这些文件声明了同一个块名，导入时会互相覆盖：" +
+            "；".join("%s <- %s" % (n, "、".join(fs)) for n, fs in dup.items()) +
+            "。一个块名只能来自一个文件。")
+
+    # 主程序(ORGANIZATION_BLOCK/OB1)必须最先导入。
+    # 实测：导入 OB1 会【替换整个程序集】—— 先导的子程序会被它抹掉，
+    # 随后编译报交叉引用错(ret=-1610612428)，但 IMPORTPOU 全是 ret=0，看日志找不出真因。
+    # （和"导出 OB1 会把所有块一起导出"是对称的：OB1 那一份就代表整个程序。）
+    ob1 = [f for f in awl_files
+           if re.search(r"^ORGANIZATION_BLOCK", _read(f), re.M)]
+    if ob1 and awl_files[0] not in ob1:
+        awl_files = ob1 + [f for f in awl_files if f not in ob1]
+        report["detail"]["reordered"] = (
+            "主程序 %s 已自动排到最前 —— 导入 OB1 会替换整个程序集，"
+            "排在后面会把先导入的子程序抹掉。" % "、".join(os.path.basename(f) for f in ob1))
+
+    # ---- 第1关：静态预检（不启动软件）----
     bad = []
     for f in awl_files:
         r = stlcheck.check_file(f)
@@ -71,20 +156,34 @@ def deploy(awl_files, project_path=None, template=None, open_after=False, verify
         return report
 
     # ---- 准备工程 ----
+    src = _pick_template(template)
     if project_path is None:
-        project_path = os.path.join(os.path.dirname(awl_files[0]), "_autoflow.smart")
+        # 扩展名跟模板走：.smartV3 存成 .smart 会让软件认错格式
+        ext = os.path.splitext(src)[1] if src else ".smart"
+        project_path = os.path.join(os.path.dirname(awl_files[0]), "_autoflow" + ext)
+    project_path = os.path.abspath(project_path)
     if not os.path.exists(project_path):
-        shutil.copy(template or TEMPLATE, project_path)
+        if not src:
+            raise FlowError(
+                "没有可用的模板工程：软件自带的 %s 不存在，.smart200_local.json 里也没配 "
+                "template_project。也可以显式传 project_path 指向一个已存在的工程。"
+                % BLANK_TEMPLATE)
+        shutil.copy(src, project_path)
+    report["detail"]["template"] = src if src else "(用已存在的工程)"
 
-    if verify_block is None:
-        verify_block = _block_name(_read(awl_files[-1]))
-    out_awl = os.path.join(os.path.dirname(project_path), "_verify_roundtrip.awl")
-    if os.path.exists(out_awl):
-        os.remove(out_awl)
+    outdir = os.path.dirname(project_path)
+    out_awl = {f: os.path.join(outdir, "_rt_%d.awl" % i) for i, f in enumerate(awl_files)}
+    for p in out_awl.values():
+        if os.path.exists(p):
+            os.remove(p)
 
-    # ---- 第2关：导入 + 编译（一次注入） ----
-    cmds = [f"IMPORTPOU {f}" for f in awl_files]
-    cmds += ["COMPILE", f"EXPORT {verify_block}|{out_awl}", "SAVE"]
+    # ---- 第2、3、4 关的数据一次注入全部取回 ----
+    cmds = ["IMPORTPOU " + f for f in awl_files]
+    cmds.append("COMPILE")
+    cmds += ["VALIDATE %s|0" % blocks[f] for f in awl_files]
+    cmds += ["EXPORT %s|%s" % (blocks[f], out_awl[f]) for f in awl_files]
+    cmds.append("SAVE")
+
     pid = engine.launch_instance(project_path)
     try:
         log = engine.run_script(pid, cmds)
@@ -92,37 +191,80 @@ def deploy(awl_files, project_path=None, template=None, open_after=False, verify
         if not open_after:
             engine.kill_instance(pid)
 
-    # 日志形如：script IMPORTPOU 'E:\...\x.awl' ret=0  —— 路径带引号，按文件名+ret 匹配
-    import_rets = dict(re.findall(r"IMPORTPOU '([^']+)' ret=(-?\d+)", log))
-    imports_ok = bool(import_rets) and all(
-        any(os.path.normcase(k) == os.path.normcase(f) and v == "0"
-            for k, v in import_rets.items())
-        for f in awl_files)
-    compile_ok = "COMPILE ret=0" in log
-    report["stage2_compile"] = "PASS" if (imports_ok and compile_ok) else "FAIL"
-    report["detail"]["log"] = [l for l in log.splitlines() if "ret=" in l]
-    if not (imports_ok and compile_ok):
+    report["detail"]["log"] = enginelog.ret_lines(log)
+
+    # 脚本没跑完 = 软件中途崩了或超时，后面的判据全都不可信
+    if not enginelog.done(log):
+        report["stage2_compile"] = "FAIL"
+        report["detail"]["fatal"] = "引擎脚本未跑完（无 __DONE__）—— 软件可能中途崩溃或超时"
         return report
 
-    # ---- 第3关：往返导出核对指令 ----
-    if not os.path.exists(out_awl) or os.path.getsize(out_awl) == 0:
-        report["stage3_roundtrip"] = "FAIL"
-        report["detail"]["roundtrip"] = "导出为空 —— 块可能没真正建立"
+    # ---- 第2关：导入 + 编译 ----
+    ok2 = enginelog.imports_ok(log, awl_files) and enginelog.compiled(log)
+    report["stage2_compile"] = "PASS" if ok2 else "FAIL"
+    if not ok2:
+        report["detail"]["imports"] = enginelog.imports(log)
         return report
-    src_ops = _ops(_read(awl_files[-1]))
-    back_ops = set(_ops(_read(out_awl)))
-    missing = [o for o in src_ops if o not in back_ops]
-    report["stage3_roundtrip"] = "PASS" if not missing else "FAIL"
-    report["detail"]["roundtrip"] = {
-        "instructions": len(src_ops),
-        "missing": missing,
-        "exported_bytes": os.path.getsize(out_awl),
-    }
-    report["passed"] = not missing
+
+    # ---- 第3关：引擎真值 ----
+    v = enginelog.validation(log)
+    report["detail"]["engine_validate"] = v
+    ok3 = enginelog.validation_ok(log, list(blocks.values()))
+    report["stage3_engine_validate"] = "PASS" if ok3 else "FAIL"
+    if not ok3:
+        report["detail"]["hint"] = (
+            "软件判定这些网络是无效程序段（打开工程会看到标红）。"
+            "注意：编译仍可能 ret=0，因为无效网络被排除在编译之外。")
+        return report
+
+    # ---- 第4关：逐块往返核对 ----
+    rt = {}
+    all_ok = True
+    for f in awl_files:
+        name, dst = blocks[f], out_awl[f]
+        if not os.path.exists(dst) or os.path.getsize(dst) == 0:
+            rt[name] = {"error": "导出为空 —— 块可能没真正建立"}
+            all_ok = False
+            continue
+        src_text = _section(_read(f), name)
+        back_text = _section(_read(dst), name)
+        if back_text is None:
+            rt[name] = {"error": "导出文件里找不到块 %r —— 块没真正建立" % name}
+            all_ok = False
+            continue
+        src_ops = _ops(src_text)
+        back_ops = set(_ops(back_text))
+        missing = [o for o in src_ops if o not in back_ops]
+        n_src, n_back = _net_count(src_text), _net_count(back_text)
+        entry = {"instructions": len(src_ops), "missing": missing,
+                 "networks_src": n_src, "networks_back": n_back,
+                 "exported_bytes": os.path.getsize(dst)}
+        if missing or n_src != n_back:
+            all_ok = False
+            if n_src != n_back:
+                entry["error"] = "网络数对不上：源 %d 段，回来 %d 段" % (n_src, n_back)
+        rt[name] = entry
+    report["stage4_roundtrip"] = "PASS" if all_ok else "FAIL"
+    report["detail"]["roundtrip"] = rt
+
+    report["passed"] = all_ok
     report["project"] = project_path
     if open_after:
         report["opened_pid"] = pid
     return report
+
+
+def validate_project(project_path, block_names):
+    """只验不改：问引擎某几个块有没有无效程序段（不导入、不编译、不保存）。"""
+    cmds = ["VALIDATE %s|0" % b for b in block_names]
+    pid = engine.launch_instance(project_path)
+    try:
+        log = engine.run_script(pid, cmds)
+    finally:
+        engine.kill_instance(pid)
+    return {"blocks": enginelog.validation(log),
+            "all_valid": enginelog.validation_ok(log, block_names),
+            "completed": enginelog.done(log)}
 
 
 def open_project(project_path, foreground=True):

@@ -30,3 +30,9 @@ native/injector/bin/**
 !native/injector/bin/Release/net8.0/win-x86/injector.deps.json
 .smart200_local.json
 native/dbgcap/capture.log
+samples/_e2e/
+samples/_val_*.smart*
+samples/blank_template.smart*
+samples/_rt_*.awl
+native/bootstrap/*.dll.bak
+samples/*.ERR

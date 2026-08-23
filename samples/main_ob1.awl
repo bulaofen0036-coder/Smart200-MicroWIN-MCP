@@ -1,0 +1,16 @@
+ORGANIZATION_BLOCK MAIN:OB1
+TITLE=主程序 —— 自动化流程验证用
+BEGIN
+Network 1
+//主程序调用子程序：验证 OB1 能否被自动导入
+	LD     SM0.0
+	CALL   被调用示例
+Network 2
+//首次扫描初始化
+	LD     SM0.1
+	MOVB   0, VB900
+Network 3
+//1 秒脉冲驱动输出
+	LD     SM0.5
+	=      Q0.7
+END_ORGANIZATION_BLOCK

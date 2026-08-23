@@ -17,8 +17,8 @@ AWL 是 STEP 7-Micro/WIN SMART 的程序块导出文本格式（GBK 编码，CRL
 
 import re
 
-_BLOCK_HEAD = re.compile(r"^(SUBROUTINE_BLOCK|PROGRAM_BLOCK|INTERRUPT_BLOCK|DATA_BLOCK)\s+(.+?):(\w+)\s*$")
-_BLOCK_END = re.compile(r"^END_(SUBROUTINE_BLOCK|PROGRAM_BLOCK|INTERRUPT_BLOCK|DATA_BLOCK)\s*$")
+_BLOCK_HEAD = re.compile(r"^(SUBROUTINE_BLOCK|PROGRAM_BLOCK|ORGANIZATION_BLOCK|INTERRUPT_BLOCK|DATA_BLOCK)\s+(.+?):(\w+)\s*$")
+_BLOCK_END = re.compile(r"^END_(SUBROUTINE_BLOCK|PROGRAM_BLOCK|ORGANIZATION_BLOCK|INTERRUPT_BLOCK|DATA_BLOCK)\s*$")
 _NETWORK = re.compile(r"^Network\s+(\d+)\s*$")
 _INSTR = re.compile(r"^[\t ]+([A-Z][A-Z0-9=]*)\b\s*(.*)$")
 # 操作数里的地址（V/M/I/Q/SM + 字节/位）
