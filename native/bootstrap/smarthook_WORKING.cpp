@@ -880,6 +880,27 @@ static void DoWork() {
                             }
                         }
                     }
+                } else if(strcmp(ln,"GETLANG")==0){
+                    // 读【工程级】编程语言。S7-200 SMART 的编程语言是整个工程一个设置
+                    // (PRJ_ 前缀，不是 POU_) —— 和博途"每个块各选一种语言"完全不同。
+                    typedef int (__thiscall *GetLang)(void*, int*);
+                    GetLang gl=(GetLang)Sym("?PRJ_GetLang@MWRetrieve@@QBEJAAW4LANGUAGE@@@Z");
+                    if(!gl){ Log("script GETLANG ERR=无 PRJ_GetLang ret=-1"); }
+                    else { int lang=-999; int r=gl(gR,&lang); Log("script GETLANG ret=%d lang=%d", r, lang); }
+                } else if(strcmp(ln,"SETLANG")==0){
+                    // 设工程级编程语言。LANGUAGE 是枚举，按值传(4字节)。
+                    // ⚠ 【尚未打通，别当成功用】2026-08-25 实测：ret=0 但语言没变 ——
+                    //   同一实例内随后 GETLANG 仍返回原值，SAVEAS 后新实例读也是原值，
+                    //   所以不是读缓存的问题，是真没生效。又一个"报成功其实没做"。
+                    //   线索：语言可能真正存在 MWPrjDataMgr(?SetLang@MWPrjDataMgr@@QAEJW4LANGUAGE@@@Z)，
+                    //   PRJ_SetLang 或许只是转发、还需要提交/刷新那一步；
+                    //   另有 ?ReverseCompilePous@MWPouDataMgr@@QAEJW4LANGUAGE@@@Z
+                    //   看名字是"把所有 POU 反编译到指定语言"，切换语言多半要靠它真正做转换。
+                    //   在打通之前不要包装成 MCP 工具 —— 宁可没有，也不给一个报成功不干活的。
+                    typedef int (__thiscall *SetLang)(void*, int);
+                    SetLang sl=(SetLang)Sym("?PRJ_SetLang@MWStore@@QAEJW4LANGUAGE@@@Z");
+                    if(!sl){ Log("script SETLANG ERR=无 PRJ_SetLang ret=-1"); }
+                    else { int lang=atoi(arg); int r=sl(gS,lang); Log("script SETLANG lang=%d ret=%d", lang, r); }
                 } else Log("script: 未知命令 %s", ln);
             }
             fclose(mf);

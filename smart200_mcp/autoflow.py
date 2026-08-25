@@ -25,6 +25,8 @@ from . import engine, enginelog, localcfg, paths, stlcheck
 
 # 软件的文本用系统 ANSI 代码页（中文机器上就是 GBK）；写死 gbk 在非中文系统会崩
 ANSI = "mbcs"
+# 软件的 AWL 用 CRLF 行尾；写成 chr() 是为了避免被各层转义搞坏
+CRLF = chr(13) + chr(10)
 
 # 建新工程用的模板：默认用【软件自带的空白模板】——干净、零客户数据。
 # 以前默认是拿一个客户工程当模板，自动建出来的每个工程都带着客户的程序块。
@@ -101,11 +103,72 @@ def _net_count(text):
 
 
 def _read(path):
+    """读 AWL 文本。
+
+    编码探测顺序是【先 UTF-8 再 ANSI】，不能反过来：
+    GBK 几乎接受任意字节，UTF-8 的中文常被它静默解成乱码而不报错
+    （实测 "ASCII↔HEX" 的 UTF-8 字节被 GBK 解成 "ASCII鈫揌EX"，一声不吭）；
+    反方向则很安全 —— 18 个真实 GBK 块文件用严格 UTF-8 解码全部正确拒绝、零误判。
+    """
     raw = open(path, "rb").read()
+    if raw.startswith(bytes((0xEF, 0xBB, 0xBF))):
+        return raw[3:].decode("utf-8")
     try:
-        return raw.decode(ANSI)
+        return raw.decode("utf-8")
     except UnicodeDecodeError:
-        return raw.decode("utf-8", "replace")
+        return raw.decode(ANSI, "replace")
+
+
+def _engine_ready_awl(path, tmpdir, idx):
+    """把 AWL 转成引擎能吃的【系统 ANSI 代码页 + CRLF】临时文件。
+
+    为什么需要：引擎的 IMPORTPOU 是按 ANSI 读文件的。直接喂 UTF-8 会
+    ret=0（又一个"报成功"），但块名导进去是乱码 —— 随后按中文块名找就是
+    "块未找到"（2026-08-25 实测）。以前只能让用户自己维护一份 GBK 副本，
+    这是每次都要过的门槛，现在在这里自动抹平。
+
+    已经是 ANSI+CRLF 的原样返回，不做多余拷贝。
+    """
+    raw = open(path, "rb").read()
+    # 判"是不是已经是 ANSI"必须先试 UTF-8，不能反过来问 ANSI 能不能解 ——
+    # UTF-8 常能被 GBK 解码成功(乱码却不报错)，那样会把 UTF-8 文件误判成
+    # "已经是 ANSI"直接原样交给引擎，又绕回块名乱码。踩过。
+    try:
+        raw.decode("utf-8")
+        is_utf8 = True
+    except UnicodeDecodeError:
+        is_utf8 = False
+    is_ascii = not any(b > 127 for b in raw)
+    # 纯 ASCII 时两种编码等价，只要行尾已是 CRLF 就不用动
+    if (is_ascii or not is_utf8) and CRLF.encode("ascii") in raw:
+        return path
+
+    # splitlines() 认所有行尾形式(CR / LF / CRLF)，重组成软件要的 CRLF
+    text = CRLF.join(_read(path).splitlines()) + CRLF
+    try:
+        data = text.encode(ANSI)
+    except UnicodeEncodeError:
+        # UnicodeEncodeError.start 在 mbcs 上不可信（实测指到第 0 个字符），
+        # 自己逐字符找，报出行号和具体是哪个字 —— 报错要能直接定位才有用。
+        where, ch = None, None
+        for n, line in enumerate(text.split(CRLF), 1):
+            for c in line:
+                try:
+                    c.encode(ANSI)
+                except UnicodeEncodeError:
+                    where, ch = n, c
+                    break
+            if where:
+                break
+        raise FlowError(
+            "%s 第 %s 行有 GBK 表示不了的字符 %r（U+%04X）。"
+            "软件的 AWL 只认系统 ANSI 代码页 —— 换个能表示的写法即可"
+            "（踩过的例子：全角箭头 U+2194 不在 GBK 里，写成 <-> 就好）。"
+            % (os.path.basename(path), where, ch, ord(ch)))
+    dst = os.path.join(tmpdir, "in_%d_%s" % (idx, os.path.basename(path)))
+    with open(dst, "wb") as fh:
+        fh.write(data)
+    return dst
 
 
 def _fingerprint(path):
@@ -218,7 +281,13 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
     cmds = ["SYMSET %s|%s" % (addr, name) for name, addr in (symbols or {}).items()]
     if symbols:
         cmds.append("GVTCOMPILE x")
-    cmds += ["IMPORTPOU " + f for f in awl_files]
+    # 交给引擎前统一规范编码/行尾 —— 用户可以直接用 UTF-8 写 AWL
+    engine_files = {f: _engine_ready_awl(f, tmpdir, i)
+                    for i, f in enumerate(awl_files)}
+    converted = [os.path.basename(f) for f in awl_files if engine_files[f] != f]
+    if converted:
+        report["detail"]["encoding_normalized"] = converted
+    cmds += ["IMPORTPOU " + engine_files[f] for f in awl_files]
     cmds.append("COMPILE")
     cmds += ["VALIDATE %s|0" % blocks[f] for f in awl_files]
     cmds += ["EXPORT %s|%s" % (blocks[f], out_awl[f]) for f in awl_files]
@@ -267,7 +336,10 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
         return report
 
     # ---- 第2关：导入 + 编译（含符号是否真的设上）----
-    ok2 = enginelog.imports_ok(log, awl_files) and enginelog.compiled(log)
+    # 日志里记的是【实际交给引擎的】路径（编码规范化后可能是临时文件），
+    # 拿原始路径去比对会永远匹配不上 —— 判据必须和被判对象对齐。
+    ok2 = (enginelog.imports_ok(log, [engine_files[f] for f in awl_files])
+           and enginelog.compiled(log))
     if symbols and not enginelog.symbols_ok(log, symbols):
         ok2 = False
         report["detail"]["symbol_hint"] = (

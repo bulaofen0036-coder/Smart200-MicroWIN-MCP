@@ -154,8 +154,11 @@ def check(text):
 def check_file(path):
     with open(path, "rb") as f:
         raw = f.read()
+    # 先 UTF-8 再 ANSI —— 反过来会把 UTF-8 静默解成 GBK 乱码（见 autoflow._read）
+    if raw.startswith(bytes((0xEF, 0xBB, 0xBF))):
+        raw = raw[3:]
     try:
-        text = raw.decode(ANSI)
+        text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        text = raw.decode("utf-8", "replace")
+        text = raw.decode(ANSI, "replace")
     return check(text)

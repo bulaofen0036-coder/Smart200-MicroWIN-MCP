@@ -8,8 +8,7 @@
 | 文件 | 说明 |
 |---|---|
 | `DemoStation.smartV3` | 生成好的工程（V3 格式，MicroWIN SMART V3.2 直接打开） |
-| `src/*.awl` | 17 个程序块源码（UTF-8，人读/改这一份） |
-| `gbk/*.awl` | 同上转 GBK+CRLF —— **导入软件必须用这一份** |
+| `src/*.awl` | 18 个程序块源码（UTF-8，直接改这一份；编码/行尾由 deploy 自动处理） |
 | `roundtrip.awl` | 从成品工程导出的往返核对件 |
 
 ## 规模
@@ -39,6 +38,39 @@
 | SBR11 | `时钟与统计` | 11 | `TODR/TODW`、扩展时钟 `TODRX/TODWX`、运行小时计、班次产量 |
 | SBR12 | `字符串处理` | 7 | `SLEN/SCPY/SCAT/SSCPY/SFND/CFND` 报文与提示文本拼装 |
 
+## 编程语言（为什么打开看到的是梯形图）
+
+S7-200 SMART 只有三种编程语言：**LAD 梯形图 / FBD 功能块图 / STL 语句表**。
+没有 SCL/ST，也没有 GRAPH/SFC —— 这点和博途完全不同。
+
+关键认知：**编程语言是整个工程的一个设置，不是每个程序块各自的属性。**
+（引擎里对应 `PRJ_GetLang` / `PRJ_SetLang`，前缀是 `PRJ_` 工程级，不是 `POU_`。）
+博途里每个块建的时候各选一种语言，SMART 不是这样。
+
+本工程的源码是 **AWL（也就是 STL 语句表的文本格式）**，
+但工程语言设置是默认的 LAD，所以在软件里打开看到的是梯形图 —— 同一份程序的不同视图而已。
+
+**要换成语句表看**：在 MicroWIN SMART 里切换视图即可（工具/视图里的 LAD、FBD、STL 三选一），
+整个工程一起变。程序内容不受影响。
+
+实测到的 `LANGUAGE` 枚举（`GETLANG` 读本工程返回 2，与"显示为梯形图"吻合）：
+
+| 值 | `POU_IsValidNet` 的反应 | 判断 |
+|---|---|---|
+| 0 | 全部有效 | 文本语言（STL）—— 本工程正是 STL 文本导入的 |
+| **2** | 全部有效 | **LAD 梯形图**（`GETLANG` 实读值，与界面显示吻合）|
+| 1 / 3 / 4 | 全部无效 | 不被接受 |
+
+> ⚠ 别把 1 当成 FBD。我一度这样推断并解释成"STL 里有些结构 FBD 表达不了"，
+> 但对照实验推翻了它：拿最简单的一条 `LD I0.0 / = Q0.2`（LAD/FBD/STL 都能画）去试，
+> lang=1 照样判无效。FBD 画个线圈不可能有问题，所以 1 不是 FBD。
+> 1 到底是什么没有确证 —— 只知道引擎只接受 0 和 2。
+
+> 这解释了 `POU_IsValidNet` 的老经验"LANGUAGE 传 0 正常"：传 0 按文本(STL)判，
+> 本工程本来就是 STL 写的，自然全有效。
+
+⚠ 用 MCP 自动切换语言（`PRJ_SetLang`）**目前没打通**：调用 `ret=0` 但语言不变，
+存盘后新实例读还是原值。所以现在请在软件界面上切。
 ## 硬件
 
 CPU **ST32**（沿用空白模板的型号，`smart_ui_project_tree` 实读）。
@@ -84,23 +116,22 @@ I0.7 出料到位       I1.7 报警确认        Q0.7 报警指示
 
 ## 怎么重建 / 怎么改
 
-改 `src/*.awl` → 转 GBK+CRLF 到 `gbk/` → 一条 `smart_deploy` 搞定
-（它会自动把 OB1 排最前、按正确顺序设符号，并跑完五关）：
+改 `src/*.awl`，然后一条 `smart_deploy` 搞定：
 
 ```
 smart_deploy(
-    awl_files=[<gbk 目录下全部 .awl，按文件名排序即可>],
+    awl_files=[<src 目录下全部 .awl，按文件名排序即可>],
     project_path=r"...\DemoStation.smartV3",
     symbols={"启动按钮": "I0.1", ...},
 )
 ```
 
-转码（Git Bash）：
-```bash
-for f in src/*.awl; do
-  iconv -f UTF-8 -t GBK "$f" | sed 's/$/\r/' > "gbk/$(basename $f)"
-done
-```
+**不用管编码和行尾**：`deploy` 会自动把 UTF-8 转成软件要的 ANSI+CRLF。
+（引擎的 `IMPORTPOU` 只吃 ANSI，直接喂 UTF-8 会 `ret=0` 但块名导成乱码，
+随后按中文块名找就是"块未找到"—— 以前只能自己维护一份 GBK 副本。）
+遇到 GBK 表示不了的字符会报出**行号 + 具体是哪个字 + 码位**，不会静默换成 `?`。
+
+`deploy` 还会自动把 OB1 排到最前、按正确顺序设符号，并跑完五关验证。
 
 ## 这份工程踩过、也验过的几条硬规矩
 

@@ -8,6 +8,8 @@
 
 import glob
 import os
+import shutil
+import tempfile
 
 from mcp.server import MCPServer
 
@@ -288,6 +290,8 @@ def smart_run_workflow(project_path: str, commands: list[str]) -> dict:
       "EXPORT 块名|输出路径"   导出 POU 为 AWL
       "XML 块名|输出路径"      导出 POU 为 XML
       "IMPORTPOU AWL文件路径"  导入 AWL 程序块（改动真实落进工程，已闭环验证）
+                               编码/行尾自动规范成软件要的 ANSI+CRLF，
+                               所以 AWL 可以直接用 UTF-8 写
       "IMPORT 文件路径"        通用导入
       "COMPILE"                编译整个工程
       "VALIDATE 块名|0"        问引擎该块有无无效程序段（权威判据）
@@ -299,13 +303,35 @@ def smart_run_workflow(project_path: str, commands: list[str]) -> dict:
     返回执行日志里各步的返回码摘要。这是最灵活的入口，可把"导入→编译→导出确认"串成一条。
     ⚠ 含导入/保存时会修改工程，请用副本或新工程。
     """
-    pid = engine.launch_instance(project_path)
+    # IMPORTPOU 的文件先过一遍编码规范化：引擎按 ANSI 读文件，
+    # 直接喂 UTF-8 会 ret=0 但块名导成乱码，随后按中文块名找就是"块未找到"。
+    # deploy 早就这么做了，这里补齐 —— 否则同一个坑换个入口又能踩一次。
+    tmpdir = tempfile.mkdtemp(prefix="smart200_wf_")
+    normalized = []
     try:
-        log = engine.run_script(pid, commands)
+        cooked = []
+        for i, c in enumerate(commands):
+            if c.upper().startswith("IMPORTPOU ") and os.path.exists(c[10:].strip()):
+                src = c[10:].strip()
+                dst = autoflow._engine_ready_awl(src, tmpdir, i)
+                if dst != src:
+                    normalized.append(os.path.basename(src))
+                cooked.append("IMPORTPOU " + dst)
+            else:
+                cooked.append(c)
+
+        pid = engine.launch_instance(project_path)
+        try:
+            log = engine.run_script(pid, cooked)
+        finally:
+            engine.kill_instance(pid)
     finally:
-        engine.kill_instance(pid)
+        shutil.rmtree(tmpdir, ignore_errors=True)
     steps = [ln for ln in log.splitlines() if "script " in ln or "ret=" in ln]
-    return {"steps": steps, "ok": "__DONE__" in log}
+    out = {"steps": steps, "ok": "__DONE__" in log}
+    if normalized:
+        out["encoding_normalized"] = normalized
+    return out
 
 
 def main():

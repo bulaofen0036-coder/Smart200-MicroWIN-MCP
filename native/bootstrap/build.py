@@ -60,6 +60,7 @@ def find_vcvars():
 
 
 def main():
+    force = "--force" in sys.argv
     vcvars = find_vcvars()
     if not vcvars:
         print("[错误] 找不到 vcvars32.bat。请安装 Visual Studio Build Tools 的 "
@@ -67,8 +68,24 @@ def main():
         return 1
     print("[工具链] " + vcvars)
 
-    # 两份源码必须一致 —— 改了 smarthook.cpp 却编 _WORKING 那份是踩过的坑
-    shutil.copyfile(os.path.join(HERE, SRC), os.path.join(HERE, WORK))
+    # 两份源码必须一致。SRC(smarthook.cpp) 是【权威源】，WORK(_WORKING.cpp) 是它的副本。
+    #
+    # ⚠ 这里以前是无条件 copyfile，会【静默抹掉】改在 WORK 上的修改：
+    #   文件名叫 "_WORKING" 反而像"正在用的那份"，很容易改错地方，
+    #   然后编出来的 DLL 功能没变、字节数还分毫不差，极难看出问题（踩过，2026-08-25）。
+    # 现在改成：内容不一致就停下来问，不替人做决定。
+    src_p, work_p = os.path.join(HERE, SRC), os.path.join(HERE, WORK)
+    if os.path.exists(work_p):
+        a = open(src_p, "rb").read()
+        b = open(work_p, "rb").read()
+        if a != b and os.path.getmtime(work_p) > os.path.getmtime(src_p) and not force:
+            print("[停止] %s 比 %s 新且内容不同 —— 你多半改错了文件。" % (WORK, SRC))
+            print("        %s 是【权威源】，%s 只是它的副本，编译前会被覆盖。" % (SRC, WORK))
+            print("        要保留 %s 上的改动，先把它拷回 %s：" % (WORK, SRC))
+            print("            copy /Y %s %s" % (WORK, SRC))
+            print("        确认要丢弃 %s 的改动，就加 --force 重跑。" % WORK)
+            return 1
+    shutil.copyfile(src_p, work_p)
 
     cl = ("cl /nologo /LD /O2 /EHsc /std:c++17 /utf-8 /MT {work} "
           "/Fe:{out} /link user32.lib").format(work=WORK, out=OUT)
