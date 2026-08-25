@@ -473,6 +473,192 @@ def validate_project(project_path, block_names):
             "completed": enginelog.done(log)}
 
 
+_BLOCK_HEAD = re.compile(
+    r"^(SUBROUTINE|PROGRAM|ORGANIZATION|INTERRUPT|FUNCTION|DATA)_BLOCK\s+(.+?):(\S+)")
+
+
+def split_blocks(text):
+    """把一份可能含多个 BLOCK 的 AWL 文本拆开。
+
+    返回 [{"kind","name","id","text","networks"}]。
+    单独成函数是为了能脱机测 —— 拆错了会静默少导出几个块。
+    """
+    text = text.replace("\r\n", "\n")
+    lines = text.split("\n")
+    out, cur = [], None
+    for line in lines:
+        m = _BLOCK_HEAD.match(line.strip())
+        if m:
+            cur = {"kind": m.group(1), "name": m.group(2).strip(),
+                   "id": m.group(3), "lines": [line]}
+            continue
+        if cur is None:
+            continue
+        cur["lines"].append(line)
+        if line.strip().startswith("END_") and line.strip().endswith("_BLOCK"):
+            body = "\n".join(cur["lines"])
+            out.append({"kind": cur["kind"], "name": cur["name"], "id": cur["id"],
+                        "text": body, "networks": _net_count(body)})
+            cur = None
+    return out
+
+
+# 绝对地址与常数的形态（操作数长这样就不是符号名）
+_ABS_OPERAND = re.compile(
+    r"^(?:"
+    r"[IQMVSL][BWDX]?\d+(?:\.\d+)?"          # I0.0 Q0.1 VB100 VW100 VD100 M0.0 S0.0 LD30
+    r"|SM[BWD]?\d+(?:\.\d+)?"                # SM0.0 SMB34 SMW90 SMD38
+    r"|AIW\d+|AQW\d+"                        # 模拟量
+    r"|[TC]\d+|HC\d+|AC[0-3]"                # 定时器/计数器/高速计数器/累加器
+    r"|[IQ]B\d+"                             # 字节直接寻址
+    r"|[+-]?\d+(?:\.\d+)?"                   # 整数/实数常量
+    r"|16#[0-9A-Fa-f]+"                      # 十六进制
+    r"|&?[A-Z]+\d+(?:\.\d+)?"                # 指针取址等
+    r")$")
+# 这些指令的操作数本来就是名字（块名/标号/步），不算符号引用
+_NAME_OPERAND_OPS = {"CALL", "ATCH", "DTCH", "JMP", "LBL", "SCRT", "LSCR",
+                     "FOR", "NEXT", "SCRE", "CRET", "CRETI"}
+
+
+# 西门子【内置系统符号】（系统变量表里的，对应 SM 区）。任何工程都自带，
+# 不需要使用者提供 —— 混进"你必须带上的符号"里会误导人。
+# 这是启发式名单：认不出来的会被当成用户符号（偏保守，宁可多提示也不漏）。
+_SYS_SYMBOL = re.compile(
+    r"^(?:Always_On|First_Scan_On|Retentive_Lost|RUN_Power_Up"
+    r"|Clock_\w+"                       # Clock_1s / Clock_60s ...
+    r"|Time_\d+_Intrvl"                 # 定时中断周期
+    r"|P\d_\w+"                         # 自由口：P0_Config / P0_End_Char ...
+    r"|HSC\d_\w+"                       # 高速计数：HSC0_CV / HSC0_Ctrl ...
+    r"|PLS\d_\w+|PTO\d_\w+|PWM\d_\w+"   # 脉冲输出
+    r"|XMT\d?_\w+|RCV\d?_\w+"
+    r")$")
+
+
+def classify_symbol_refs(refs):
+    """把符号引用分成"软件内置的"和"你自己定义的"。
+
+    只有后者需要在重新部署时用 symbols= 带上；
+    前者是系统变量表里的，新工程自带。
+    """
+    sysm = [s for s in refs if _SYS_SYMBOL.match(s)]
+    user = [s for s in refs if not _SYS_SYMBOL.match(s)]
+    return user, sysm
+
+
+def symbol_refs(text):
+    """找出 AWL 里用到的【符号名】（而非绝对地址）操作数。
+
+    为什么需要：软件导出 POU 时，凡是在符号表里有名字的地址都会被
+    **替换成符号名**（`LD I0.0` 导出回来是 `LD 急停_常闭`）。
+    这样的 AWL 依赖那份符号表 —— 原样导进一个没有符号表的新工程，
+    符号名解析不了，整个网络会变成无效程序段、编译报交叉引用错。
+    导出工具必须主动把这件事说出来，否则"导出的东西导不回去"会让人摸不着头脑。
+    """
+    found = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if not line.startswith("\t"):
+            continue
+        parts = line.strip().split(None, 1)
+        if not parts:
+            continue
+        op = parts[0]
+        if op in _NAME_OPERAND_OPS or len(parts) == 1:
+            continue
+        for tok in parts[1].split(","):
+            tok = tok.strip()
+            if not tok or _ABS_OPERAND.match(tok):
+                continue
+            if tok not in found:
+                found.append(tok)
+    return found
+
+
+_BAD_FN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _safe_filename(name):
+    """块名可能带 Windows 文件名非法字符（/ : * 等），清一下再当文件名用。"""
+    s = _BAD_FN.sub("_", name).strip().rstrip(".")
+    return s or "unnamed"
+
+
+def export_all_blocks(project_path, out_dir, encoding="utf-8"):
+    """把工程里【所有】POU 各导出成一个 .awl 文件，不用先知道块名。
+
+    做法：导出 OB1 时引擎会连依赖一起带出来，而"OB1 那一份就代表整个程序"
+    （和"导入 OB1 会替换整个程序集"是对称的），所以导一次再拆开即可。
+
+    encoding: 落盘编码。默认 utf-8（人读/进 git 友好）；
+              传 "ansi" 得到软件原生的 ANSI+CRLF。
+              两种都能被 deploy 直接吃回去（它会自动规范化）。
+    """
+    project_path = os.path.abspath(project_path)
+    if not os.path.exists(project_path):
+        raise FlowError("工程不存在：" + project_path)
+    out_dir = os.path.abspath(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
+    tmpdir = tempfile.mkdtemp(prefix="smart200_exp_")
+    dump = os.path.join(tmpdir, "all.awl")
+    try:
+        pid = engine.launch_instance(project_path)
+        try:
+            log = engine.run_script(pid, ["EXPORT MAIN|" + dump])
+        finally:
+            engine.kill_instance(pid)
+        if not enginelog.done(log):
+            raise FlowError("引擎脚本没跑完 —— 软件可能中途崩了或超时")
+        if not os.path.exists(dump) or os.path.getsize(dump) == 0:
+            raise FlowError("导出为空。日志：" + "; ".join(enginelog.ret_lines(log)))
+        blocks = split_blocks(_read(dump))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if not blocks:
+        raise FlowError("导出的文件里一个 BLOCK 都没解析出来 —— 格式可能变了")
+
+    written, seen = [], {}
+    for b in blocks:
+        stem = _safe_filename(b["name"])
+        seen[stem] = seen.get(stem, 0) + 1
+        if seen[stem] > 1:                       # 同名块（清洗后撞名）不许互相覆盖
+            stem = "%s_%d" % (stem, seen[stem])
+        dst = os.path.join(out_dir, stem + ".awl")
+        body = CRLF.join(b["text"].split("\n")) + CRLF
+        enc = ANSI if str(encoding).lower() in ("ansi", "mbcs", "gbk") else "utf-8"
+        with open(dst, "wb") as fh:
+            fh.write(body.encode(enc, "replace"))
+        written.append({"block": b["name"], "id": b["id"], "kind": b["kind"],
+                        "networks": b["networks"], "file": dst})
+
+    result = {"count": len(written), "out_dir": out_dir,
+              "encoding": "ansi" if enc == ANSI else "utf-8",
+              "blocks": written}
+
+    # 导出的 AWL 里若出现符号名，它就依赖那份符号表 —— 必须说出来，
+    # 否则"导出的东西导不回去"（编译报交叉引用错）会让人摸不着头脑。
+    refs = []
+    for b in blocks:
+        for s in symbol_refs(b["text"]):
+            if s not in refs:
+                refs.append(s)
+    user_refs, sys_refs = classify_symbol_refs(refs)
+    if user_refs:
+        result["symbols_you_must_supply"] = user_refs
+        result["builtin_symbols_used"] = sys_refs
+        result["note"] = (
+            "这些块里用的是【符号名】不是绝对地址 —— 软件导出 POU 时会把符号表里"
+            "有名字的地址换成符号名。要把它们导回一个新工程，必须带上这 %d 个"
+            "自定义符号：smart_deploy(awl_files=[...], symbols={符号名: 绝对地址})，"
+            "否则符号解析不了、整个网络会变成无效程序段、编译报交叉引用错。"
+            "另外 %d 个是软件内置的系统符号（Always_On / P0_* / HSC0_* 这类），"
+            "新工程自带，不用你提供。"
+            % (len(user_refs), len(sys_refs)))
+    elif sys_refs:
+        result["builtin_symbols_used"] = sys_refs
+    return result
+
+
 def open_project(project_path, foreground=True):
     """打开工程给人看（从磁盘加载，项目树才会正确显示新导入的块）。"""
     pid = engine.launch_instance(project_path)

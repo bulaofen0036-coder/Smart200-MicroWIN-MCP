@@ -213,10 +213,65 @@ def smart_validate_project(project_path: str, block_names: list[str]) -> dict:
     return autoflow.validate_project(project_path, block_names)
 
 
+def _slim_report(report):
+    """把 deploy 的完整报告压成好读的摘要。
+
+    原则：**成功时精简，失败时该给的诊断一条不少。**
+    18 个块的完整报告有几百行 JSON（每块的验证明细 + 往返明细 + 整段引擎日志），
+    全过时这些没人看；一旦不过，又必须给足信息才能排错。
+    警告类字段（重排、编码转换、落盘异常）无论成败都保留 —— 那是"虽然过了但你该知道"。
+
+    库函数 autoflow.deploy 始终返回完整报告，裁剪只发生在 MCP 工具这一层。
+    """
+    d = report.get("detail") or {}
+    keys = ("stage1_structure", "stage2_compile", "stage3_engine_validate",
+            "stage4_roundtrip", "stage5_persisted", "passed", "project")
+    out = {k: report[k] for k in keys if k in report}
+
+    ev = d.get("engine_validate") or {}
+    rt = d.get("roundtrip") or {}
+    if ev or rt:
+        out["summary"] = {
+            "blocks": len(ev) or len(rt),
+            "networks": sum((v.get("nets") or 0) for v in ev.values()),
+            "instructions": sum((v.get("instructions_src") or 0) for v in rt.values()),
+        }
+
+    # 无论成败都值得说的
+    for k in ("reordered", "encoding_normalized", "persist_warn"):
+        if d.get(k):
+            out[k] = d[k]
+    p = d.get("persisted") or {}
+    if p.get("fingerprint_after"):
+        out["persisted_bytes"] = p.get("bytes")
+
+    if report.get("passed"):
+        return out
+
+    # ---- 没过：把排错要用的全给出来 ----
+    det = {}
+    for k in ("fatal", "structure", "hint", "persist_hint", "symbol_hint",
+              "imports", "blocks", "log"):
+        if d.get(k):
+            det[k] = d[k]
+    bad = {k: v for k, v in ev.items() if v.get("invalid") or v.get("error")}
+    if bad:
+        det["blocks_with_invalid_networks"] = bad
+    bad_rt = {k: v for k, v in rt.items() if v.get("error") or v.get("missing_kinds")}
+    if bad_rt:
+        det["blocks_failing_roundtrip"] = bad_rt
+    bad_sym = {k: v for k, v in (d.get("symbols") or {}).items() if not v.get("ok")}
+    if bad_sym:
+        det["symbols_not_set"] = bad_sym
+    if det:
+        out["detail"] = det
+    return out
+
+
 @mcp.tool()
 def smart_deploy(awl_files: list[str], project_path: str = "",
                  symbols: dict = None, verify_block: str = "",
-                 open_after: bool = False) -> dict:
+                 open_after: bool = False, verbose: bool = False) -> dict:
     """【全自动·推荐入口】把 AWL 块部署进工程并做五关验证，一步到位。
 
     五关（任何一关不过都会如实报 FAIL，不吹成功）：
@@ -233,12 +288,39 @@ def smart_deploy(awl_files: list[str], project_path: str = "",
     设了就能在 AWL 里直接写符号名（`LD 电机启动`），可读性和客户现场维护性都好得多。
     project_path 留空则用【软件自带的空白模板】新建（不含任何已有工程内容）。
     open_after=True 会把工程留开给人看。
+
+    AWL 文件可以直接用 UTF-8 写 —— 编码与行尾会自动规范成软件要的 ANSI+CRLF
+    （引擎的 IMPORTPOU 只吃 ANSI，直接喂 UTF-8 会 ret=0 但块名导成乱码）。
+    遇到 GBK 表示不了的字符会报出行号+具体字符，不会静默替换。
+
+    默认返回【摘要】：五关结果 + 块数/网络数/指令数，外加"虽然过了但你该知道"的
+    警告（块被重排、文件被转码、旁边冒出 .smart 等）。
+    没过时会自动附上排错要用的明细（哪些块有无效网络、哪些块往返对不上、
+    哪些符号没设上、引擎日志）。要看全量报告传 verbose=True。
     """
-    return autoflow.deploy(awl_files,
-                           project_path=project_path or None,
-                           symbols=symbols or None,
-                           verify_block=verify_block or None,
-                           open_after=open_after)
+    report = autoflow.deploy(awl_files,
+                             project_path=project_path or None,
+                             symbols=symbols or None,
+                             verify_block=verify_block or None,
+                             open_after=open_after)
+    return report if verbose else _slim_report(report)
+
+
+@mcp.tool()
+def smart_export_all(project_path: str, out_dir: str,
+                     encoding: str = "utf-8") -> dict:
+    """把工程里【所有】程序块各导出成一个 .awl 文件 —— 不用先知道块名。
+
+    拿到一个别人的工程想看内容、或者想把程序纳入 git 版本管理时用这个：
+    一次调用就把 OB1/SBR/INT 全部落到 out_dir，每块一个文件，文件名就是块名。
+    只读，不改工程。
+
+    encoding: 默认 "utf-8"（人读 / 进 git 友好）；传 "ansi" 得到软件原生的
+    ANSI+CRLF。两种都能被 smart_deploy 直接吃回去（它会自动规范化）。
+
+    返回每个块的名字、类型、网络数和落地路径。
+    """
+    return autoflow.export_all_blocks(project_path, out_dir, encoding=encoding)
 
 
 @mcp.tool()
