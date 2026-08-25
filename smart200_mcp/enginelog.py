@@ -100,3 +100,24 @@ def symbols_ok(log, wanted):
         if not r or not r["ok"] or r["name"] != name:
             return False
     return True
+
+
+_SYMDUMP_RE = re.compile(r"SYMDUMP ROW ([^|]*)\|([^|]*)\|(.*)$")
+
+
+def symbol_dump(log):
+    """解析 SYMDUMP 的输出 → [{"name","address","type"}]。
+
+    引擎按 `SYMDUMP ROW 名字|地址|类型` 一行一条打出来。
+    单独成函数并单测 —— "解析日志下结论"的代码都要可测（enginelog 的引号 bug
+    就是因为判据散在各处、零测试覆盖，活了很久没人发现）。
+    """
+    out = []
+    for line in log.splitlines():
+        m = _SYMDUMP_RE.search(line)
+        if not m:
+            continue
+        name, addr, typ = (x.strip() for x in m.groups())
+        if name and addr:
+            out.append({"name": name, "address": addr, "type": typ})
+    return out

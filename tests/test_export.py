@@ -131,6 +131,32 @@ u2, sy2 = autoflow.classify_symbol_refs(["某个没见过的名字"])
 check("认不出的归到用户符号", u2 == ["某个没见过的名字"] and sy2 == [], (u2, sy2))
 check("空输入不崩", autoflow.classify_symbol_refs([]) == ([], []))
 
+print("=== 符号表读取（SYMDUMP 日志解析）===")
+from smart200_mcp import enginelog   # noqa: E402
+
+LOGSAMPLE = LF.join([
+    "script SYMDUMP TABLE=00000000ae0d00000000000000000080 rows=32",
+    "script SYMDUMP ROW 急停_常闭|I0.0|BOOL",
+    "script SYMDUMP ROW 启动按钮|I0.1|BOOL",
+    "script SYMDUMP ROW 上料电机|Q0.2|BOOL",
+    "script SYMDUMP done=3 ret=0",
+])
+rows = enginelog.symbol_dump(LOGSAMPLE)
+check("解析出 3 条", len(rows) == 3, rows)
+check("名字正确", rows[0]["name"] == "急停_常闭", rows[0])
+check("地址正确", rows[0]["address"] == "I0.0", rows[0])
+check("类型正确", rows[0]["type"] == "BOOL", rows[0])
+check("TABLE/done 行不当成符号", all(r["name"] not in ("TABLE", "done") for r in rows))
+
+# 反向哨兵：引擎输出格式变了要能发现，别静默返回空表
+check("格式不匹配时返回空而不是瞎猜",
+      enginelog.symbol_dump("script SYMDUMP 启动按钮 I0.1") == [])
+check("空日志返回空", enginelog.symbol_dump("") == [])
+# 名字里带空格/中文标点也要能解析（符号名是用户起的）
+r2 = enginelog.symbol_dump("script SYMDUMP ROW 电机 启动（左）|I0.0|BOOL")
+check("名字含空格和全角括号也能解析",
+      r2 and r2[0]["name"] == "电机 启动（左）" and r2[0]["address"] == "I0.0", r2)
+
 print("")
 print("全部通过" if not fails else str(len(fails)) + " 项失败: " + str(fails))
 sys.exit(1 if fails else 0)

@@ -311,6 +311,71 @@ static void DoWork() {
                         if(!done) Log("script SYMSET '%s' ERR=没找到该地址所在的行", U8(want).c());
                         free(buf);
                     }
+                } else if(strcmp(ln,"SYMDUMP")==0){
+                    // 把全局变量表里【已命名的行】连同它的绝对地址一起导出来。
+                    // 用途：导出 POU 时软件会把有符号的地址换成符号名，那样的 AWL
+                    // 依赖符号表；把符号表也导出来，导出件才自包含、能原样导回去。
+                    // 复用 SYMSET 那套：扫 MW_ID 定位表，GLBVAR_GetRow 把整行当黑盒读，
+                    // 各字段用 filler 预填成空串，SafeStr 有界读，避免野指针。
+                    // 参数传 "P" 进探测模式：打印前几行的各个字段，用来确认字段偏移。
+                    typedef int (__thiscall *GRows)(void*, const unsigned char*, int*);
+                    typedef int (__thiscall *GetRow)(void*, const unsigned char*, int, void*);
+                    GRows grw=(GRows)Sym("?GLBVAR_GetNumberRows@MWRetrieve@@QBEJABVMW_ID@@AAH@Z");
+                    GetRow gr=(GetRow)Sym("?GLBVAR_GetRow@MWRetrieve@@QBEJABVMW_ID@@HAAUVARIABLE_ELEMENT@@@Z");
+                    if(!grw||!gr){ Log("script SYMDUMP ERR=API缺失 ret=-1"); }
+                    else {
+                        int probe = (arg && (arg[0]==0x50 || arg[0]==0x70)) ? 1 : 0;
+                        // 传 "ALL" 则连系统变量表和 POU 名字表一起导
+                        int all = (arg && (arg[0]==0x41 || arg[0]==0x61)) ? 1 : 0;
+                        const int N=128;
+                        static CStr blank6("", 0x40000000);
+                        void* filler=*(void**)blank6.obj();
+                        void** buf=(void**)malloc(N*4);
+                        int total=0;
+                        for(int n=0x0d80;n<=0x0dd0;n++){
+                            for(int variant=0;variant<=1;variant++){
+                                unsigned char id[16]={0};
+                                id[4]=(unsigned char)(n&0xff); id[5]=(unsigned char)((n>>8)&0xff);
+                                id[8]=(unsigned char)variant; id[15]=0x80;
+                                int rows=-1;
+                                if(grw(gR,id,&rows)!=0) continue;
+                                if(rows<=0||rows>5000) continue;
+                                char hx[40]; for(int k=0;k<16;k++) sprintf_s(hx+k*2,3,"%02x",id[k]);
+                                Log("script SYMDUMP TABLE=%s rows=%d", hx, rows);
+                                for(int r=0;r<rows;r++){
+                                    for(int i=0;i<N;i++) buf[i]=filler;
+                                    if(gr(gR,id,r,buf)!=0) continue;
+                                    if(probe){
+                                        if(r>=4) continue;
+                                        for(int f=0; f<10; f++){
+                                            char v[160]; SafeStr(&buf[f], v, sizeof(v));
+                                            if(v[0]) Log("script SYMDUMP PROBE row=%d f%d='%s'", r, f, U8(v).c());
+                                        }
+                                        continue;
+                                    }
+                                    // 字段偏移由探测模式实测确定（2026-08-25）：
+                                    //   f1=名字 f2=名字副本 f3=地址 f4=数据类型 f6=注释
+                                    // 注意名字在 f1 不是 f0 —— 一开始按 f0 读，一行都导不出来。
+                                    char name[160]; SafeStr(&buf[1], name, sizeof(name));
+                                    char addr[160]; SafeStr(&buf[3], addr, sizeof(addr));
+                                    char type[64];  SafeStr(&buf[4], type, sizeof(type));
+                                    if(!name[0] || !addr[0]) continue;
+                                    if(!all){
+                                        // POU 名字表：地址其实是 SBR0/INT0 这种，不是变量
+                                        if(_stricmp(type,"SBR")==0||_stricmp(type,"INT")==0
+                                           ||_stricmp(type,"OB")==0||_stricmp(type,"FB")==0
+                                           ||_stricmp(type,"ARRAY")==0) continue;
+                                        // 系统变量表（448 行 SM 区）：软件内置，新工程自带，不用导
+                                        if((addr[0]==0x53||addr[0]==0x73)&&(addr[1]==0x4D||addr[1]==0x6D)) continue;
+                                    }
+                                    Log("script SYMDUMP ROW %s|%s|%s", U8(name).c(), U8(addr).c(), U8(type).c());
+                                    total++;
+                                }
+                            }
+                        }
+                        Log("script SYMDUMP done=%d ret=0", total);
+                        free(buf);
+                    }
                 } else if(strcmp(ln,"GVTIMPORT")==0){
                     // "表id|文本文件路径"：走 UI 真正用的符号表导入管线
                     //   ParseImportGVTFileContent(表id, 路径, out 向量, 标志)

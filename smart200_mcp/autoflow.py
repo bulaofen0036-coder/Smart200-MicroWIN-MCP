@@ -16,6 +16,8 @@
 """
 
 import hashlib
+import io
+import json
 import os
 import re
 import shutil
@@ -603,7 +605,9 @@ def export_all_blocks(project_path, out_dir, encoding="utf-8"):
     try:
         pid = engine.launch_instance(project_path)
         try:
-            log = engine.run_script(pid, ["EXPORT MAIN|" + dump])
+            # 顺带把符号表也读出来 —— 同一次注入干两件事，省一次启动(~30s)。
+            # 导出件里用的是符号名，没有这张表就导不回去，必须一起给。
+            log = engine.run_script(pid, ["EXPORT MAIN|" + dump, "SYMDUMP x"])
         finally:
             engine.kill_instance(pid)
         if not enginelog.done(log):
@@ -611,6 +615,7 @@ def export_all_blocks(project_path, out_dir, encoding="utf-8"):
         if not os.path.exists(dump) or os.path.getsize(dump) == 0:
             raise FlowError("导出为空。日志：" + "; ".join(enginelog.ret_lines(log)))
         blocks = split_blocks(_read(dump))
+        sym_rows = enginelog.symbol_dump(log)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -643,17 +648,30 @@ def export_all_blocks(project_path, out_dir, encoding="utf-8"):
             if s not in refs:
                 refs.append(s)
     user_refs, sys_refs = classify_symbol_refs(refs)
+
+    # 符号表一并落盘，导出件才自包含 —— 拿这份 json 就能原样导回去
+    symbols = {r["name"]: r["address"] for r in sym_rows}
+    if symbols:
+        sym_file = os.path.join(out_dir, "symbols.json")
+        with io.open(sym_file, "w", encoding="utf-8") as fh:
+            json.dump(symbols, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        result["symbols_file"] = sym_file
+        result["symbols"] = symbols
+
     if user_refs:
-        result["symbols_you_must_supply"] = user_refs
         result["builtin_symbols_used"] = sys_refs
+        missing = [s for s in user_refs if s not in symbols]
+        if missing:
+            # 不该发生；真发生了要说出来，别让人拿着不完整的符号表去导回
+            result["symbols_missing_from_table"] = missing
         result["note"] = (
-            "这些块里用的是【符号名】不是绝对地址 —— 软件导出 POU 时会把符号表里"
-            "有名字的地址换成符号名。要把它们导回一个新工程，必须带上这 %d 个"
-            "自定义符号：smart_deploy(awl_files=[...], symbols={符号名: 绝对地址})，"
-            "否则符号解析不了、整个网络会变成无效程序段、编译报交叉引用错。"
-            "另外 %d 个是软件内置的系统符号（Always_On / P0_* / HSC0_* 这类），"
-            "新工程自带，不用你提供。"
-            % (len(user_refs), len(sys_refs)))
+            "块里用的是【符号名】不是绝对地址（软件导出 POU 时会把符号表里有名字的"
+            "地址换成符号名），所以这份导出**依赖符号表**。已把符号表一并导出到 "
+            "symbols.json（%d 条）。要原样导回一个新工程："
+            "smart_deploy(awl_files=[该目录下全部 .awl], symbols=<symbols.json 的内容>)。"
+            "少了它符号解析不了，整个网络会变成无效程序段、编译报交叉引用错。"
+            "另有 %d 个是软件内置的系统符号（Always_On / P0_* / HSC0_* 这类），"
+            "新工程自带，不用管。" % (len(symbols), len(sys_refs)))
     elif sys_refs:
         result["builtin_symbols_used"] = sys_refs
     return result
