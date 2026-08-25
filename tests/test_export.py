@@ -157,6 +157,30 @@ r2 = enginelog.symbol_dump("script SYMDUMP ROW 电机 启动（左）|I0.0|BOOL"
 check("名字含空格和全角括号也能解析",
       r2 and r2[0]["name"] == "电机 启动（左）" and r2[0]["address"] == "I0.0", r2)
 
+print("=== 调用关系解析（谁 CALL 谁 / ATCH 哪个中断）===")
+refs_src = LF.join([
+    "	LD     SM0.0",
+    "	CALL   系统初始化",
+    "	CALL   带参子程序, VW100, VW102",   # CALL 可以带形参，只取块名
+    "	ATCH   INT_0, 0",
+    "	ATCH   INT_1, 10",
+    "	LD     I0.0",
+])
+calls, atts = autoflow._block_refs(refs_src)
+check("解析出 CALL 的块名", calls == ["系统初始化", "带参子程序"], calls)
+check("带形参的 CALL 只取块名", "带参子程序" in calls, calls)
+check("解析出 ATCH 及事件号",
+      atts == [{"block": "INT_0", "event": 0}, {"block": "INT_1", "event": 10}], atts)
+
+# 反向哨兵：别把普通指令当成调用
+c2, a2 = autoflow._block_refs("	LD     I0.0" + LF + "	MOVW   VW1, VW2")
+check("普通指令不算调用", c2 == [] and a2 == [], (c2, a2))
+# 同一个块被 CALL 多次只算一次
+c3, _ = autoflow._block_refs("	CALL   甲" + LF + "	CALL   甲")
+check("重复 CALL 去重", c3 == ["甲"], c3)
+check("CRLF 行尾也能解析",
+      autoflow._block_refs("	CALL   乙" + chr(13) + LF)[0] == ["乙"])
+
 print("")
 print("全部通过" if not fails else str(len(fails)) + " 项失败: " + str(fails))
 sys.exit(1 if fails else 0)

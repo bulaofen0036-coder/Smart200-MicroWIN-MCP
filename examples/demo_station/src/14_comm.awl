@@ -1,5 +1,5 @@
 SUBROUTINE_BLOCK 通信处理:SBR9
-TITLE=自由口收发 XMT/RCV 与 S7 网络读写 NETR/NETW
+TITLE=自由口收发 XMT/RCV 与以太网 S7 通信 GET/PUT
 BEGIN
 Network 1
 //端口0 自由口模式：9600,8,N,1

@@ -359,6 +359,7 @@ static void DoWork() {
                                     char name[160]; SafeStr(&buf[1], name, sizeof(name));
                                     char addr[160]; SafeStr(&buf[3], addr, sizeof(addr));
                                     char type[64];  SafeStr(&buf[4], type, sizeof(type));
+                                    char cmt[400];  SafeStr(&buf[6], cmt, sizeof(cmt));
                                     if(!name[0] || !addr[0]) continue;
                                     if(!all){
                                         // POU 名字表：地址其实是 SBR0/INT0 这种，不是变量
@@ -368,7 +369,8 @@ static void DoWork() {
                                         // 系统变量表（448 行 SM 区）：软件内置，新工程自带，不用导
                                         if((addr[0]==0x53||addr[0]==0x73)&&(addr[1]==0x4D||addr[1]==0x6D)) continue;
                                     }
-                                    Log("script SYMDUMP ROW %s|%s|%s", U8(name).c(), U8(addr).c(), U8(type).c());
+                                    // 注释放最后一段：它可能含 | ，靠"最后一段吃掉剩余"来解析
+                                    Log("script SYMDUMP ROW %s|%s|%s|%s", U8(name).c(), U8(addr).c(), U8(type).c(), U8(cmt).c());
                                     total++;
                                 }
                             }

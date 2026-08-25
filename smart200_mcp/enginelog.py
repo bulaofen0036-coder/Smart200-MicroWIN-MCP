@@ -102,22 +102,36 @@ def symbols_ok(log, wanted):
     return True
 
 
-_SYMDUMP_RE = re.compile(r"SYMDUMP ROW ([^|]*)\|([^|]*)\|(.*)$")
+_SYMDUMP_RE = re.compile(r"SYMDUMP ROW ([^|]*)\|([^|]*)\|([^|]*)(?:\|(.*))?$")
+_SYMDUMP_TABLE_RE = re.compile(r"SYMDUMP TABLE=(\S+) rows=(\d+)")
 
 
 def symbol_dump(log):
-    """解析 SYMDUMP 的输出 → [{"name","address","type"}]。
+    """解析 SYMDUMP 的输出 → [{"name","address","type","comment","table"}]。
 
-    引擎按 `SYMDUMP ROW 名字|地址|类型` 一行一条打出来。
+    引擎按 `SYMDUMP ROW 名字|地址|类型|注释` 一行一条打出来，
+    每张表之前有一行 `SYMDUMP TABLE=<id> rows=N`，据此把行归到所属的表
+    （I/O 变量表 / POU 名字表 / 系统变量表 …，靠表 id 区分来源）。
+
+    注释放在最后一段：它可能含 `|`，所以最后一段吃掉剩余，不再切分。
+    没有第 4 段时 comment 为空 —— 兼容旧格式，别因为格式演进就解析失败。
+
     单独成函数并单测 —— "解析日志下结论"的代码都要可测（enginelog 的引号 bug
     就是因为判据散在各处、零测试覆盖，活了很久没人发现）。
     """
     out = []
+    table = None
     for line in log.splitlines():
+        mt = _SYMDUMP_TABLE_RE.search(line)
+        if mt:
+            table = mt.group(1)
+            continue
         m = _SYMDUMP_RE.search(line)
         if not m:
             continue
-        name, addr, typ = (x.strip() for x in m.groups())
+        name, addr, typ = (x.strip() for x in m.groups()[:3])
+        comment = (m.group(4) or "").strip()
         if name and addr:
-            out.append({"name": name, "address": addr, "type": typ})
+            out.append({"name": name, "address": addr, "type": typ,
+                        "comment": comment, "table": table})
     return out

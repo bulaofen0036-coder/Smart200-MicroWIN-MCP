@@ -677,6 +677,108 @@ def export_all_blocks(project_path, out_dir, encoding="utf-8"):
     return result
 
 
+_TITLE_RE = re.compile(r"^TITLE=(.*)$", re.M)
+_CALL_RE = re.compile(r"^CALL\s+([^,]+)")
+_ATCH_RE = re.compile(r"^ATCH\s+([^,]+),\s*(\d+)")
+
+
+def _block_refs(text):
+    """从块正文里找出它调用了谁：CALL 子程序、ATCH 中断程序。
+
+    CALL 可以带形参（`CALL 子程序, 参数1, 参数2`），只取第一个逗号前的块名。
+    """
+    calls, attaches = [], []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        s = line.strip()
+        m = _CALL_RE.match(s)
+        if m:
+            nm = m.group(1).strip()
+            if nm and nm not in calls:
+                calls.append(nm)
+            continue
+        m2 = _ATCH_RE.match(s)
+        if m2:
+            attaches.append({"block": m2.group(1).strip(), "event": int(m2.group(2))})
+    return calls, attaches
+
+
+def project_overview(project_path):
+    """读工程结构概览：有哪些块、各干什么、谁调用谁、用了哪些 I/O。只读。
+
+    拿到一个别人的工程时，这是第一步 —— 比一个块一个块点开看快得多。
+    数据来源两处，一次注入取回：
+      · EXPORT MAIN  → 全部块正文（网络数、指令数、TITLE、CALL/ATCH 关系）
+      · SYMDUMP ALL  → 全局变量表（I/O 符号，以及 POU 名字表里存的**块注释**）
+    """
+    project_path = os.path.abspath(project_path)
+    if not os.path.exists(project_path):
+        raise FlowError("工程不存在：" + project_path)
+
+    tmpdir = tempfile.mkdtemp(prefix="smart200_ov_")
+    dump = os.path.join(tmpdir, "all.awl")
+    try:
+        pid = engine.launch_instance(project_path)
+        try:
+            log = engine.run_script(pid, ["EXPORT MAIN|" + dump, "SYMDUMP ALL"])
+        finally:
+            engine.kill_instance(pid)
+        if not enginelog.done(log):
+            raise FlowError("引擎脚本没跑完 —— 软件可能中途崩了或超时")
+        if not os.path.exists(dump) or os.path.getsize(dump) == 0:
+            raise FlowError("导出为空。日志：" + "; ".join(enginelog.ret_lines(log)))
+        blocks = split_blocks(_read(dump))
+        rows = enginelog.symbol_dump(log)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # POU 名字表：块名 → 注释（软件把块注释存在这张表里）
+    pou_kinds = {"SBR", "INT", "OB", "FB"}
+    comments = {r["name"]: r["comment"] for r in rows
+                if r["type"].upper() in pou_kinds and r["comment"]}
+    # I/O 变量表：只要地址是 I/Q 的，SM 区是系统内置的不算
+    io_syms = {r["name"]: r["address"] for r in rows
+               if r["address"][:1].upper() in ("I", "Q")
+               and not r["address"].upper().startswith("SM")
+               and r["type"].upper() not in pou_kinds}
+
+    out, called = [], set()
+    for b in blocks:
+        m = _TITLE_RE.search(b["text"])
+        calls, attaches = _block_refs(b["text"])
+        called.update(calls)
+        called.update(a["block"] for a in attaches)
+        out.append({
+            "name": b["name"], "id": b["id"], "kind": b["kind"],
+            "networks": b["networks"],
+            "instructions": len(_ops(b["text"], dedup=False)),
+            "title": (m.group(1).strip() if m else ""),
+            "comment": comments.get(b["name"], ""),
+            "calls": calls,
+            "attaches": attaches,
+        })
+
+    # 没有被任何块 CALL/ATCH 到的块 = 死代码（主程序除外，它是入口）
+    orphans = [b["name"] for b in out
+               if b["kind"] != "ORGANIZATION" and b["name"] not in called]
+    # 引用了但工程里不存在的块 —— 这种会让整个网络变成无效程序段
+    have = {b["name"] for b in out}
+    dangling = sorted(n for n in called if n not in have)
+
+    return {
+        "project": project_path,
+        "summary": {
+            "blocks": len(out),
+            "networks": sum(b["networks"] for b in out),
+            "instructions": sum(b["instructions"] for b in out),
+            "io_symbols": len(io_syms),
+        },
+        "blocks": out,
+        "io_symbols": io_syms,
+        "never_called": orphans,
+        "referenced_but_missing": dangling,
+    }
+
+
 def open_project(project_path, foreground=True):
     """打开工程给人看（从磁盘加载，项目树才会正确显示新导入的块）。"""
     pid = engine.launch_instance(project_path)

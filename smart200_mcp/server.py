@@ -307,6 +307,22 @@ def smart_deploy(awl_files: list[str], project_path: str = "",
 
 
 @mcp.tool()
+def smart_overview(project_path: str) -> dict:
+    """读工程结构概览：有哪些块、各干什么、谁调用谁、用了哪些 I/O。只读。
+
+    拿到一个别人的工程时先跑这个，比一个块一个块点开看快得多。
+    每个块给出：名字/ID/类型、网络数、指令数、TITLE、块注释、
+    它 CALL 了哪些子程序、ATCH 了哪些中断（含事件号）。
+
+    另外两个字段值得先看：
+      never_called            —— 没被任何块 CALL/ATCH 到的块（死代码）
+      referenced_but_missing  —— 引用了但工程里不存在的块。这种不会报编译错，
+                                 而是让整个网络变成【无效程序段】，很隐蔽。
+    """
+    return autoflow.project_overview(project_path)
+
+
+@mcp.tool()
 def smart_export_all(project_path: str, out_dir: str,
                      encoding: str = "utf-8") -> dict:
     """把工程里【所有】程序块各导出成一个 .awl 文件 —— 不用先知道块名。
