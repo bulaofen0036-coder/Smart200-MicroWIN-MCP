@@ -1,0 +1,71 @@
+SUBROUTINE_BLOCK 通信处理:SBR9
+TITLE=自由口收发 XMT/RCV 与 S7 网络读写 NETR/NETW
+BEGIN
+Network 1
+//端口0 自由口模式：9600,8,N,1
+	LD     SM0.1
+	MOVB   16#09, SMB30
+Network 2
+//发送缓冲区：首字节为长度，其后为报文
+	LD     SM0.0
+	MOVB   6, VB700
+	MOVB   16#53, VB701
+	MOVB   16#54, VB702
+	MOVB   16#41, VB703
+	MOVB   16#52, VB704
+	MOVB   16#54, VB705
+	MOVB   16#0A, VB706
+Network 3
+//把当前产量填进报文数据区
+	LD     SM0.0
+	MOVW   VW130, VW707
+	MOVD   VD140, VD709
+Network 4
+//周期发送 XMT（端口0）
+	LD     M2.0
+	EU
+	XMT    VB700, 0
+Network 5
+//接收控制：起始字符检测 + 结束字符 + 超时
+	LD     SM0.1
+	MOVB   16#B0, SMB87
+	MOVB   16#02, SMB88
+	MOVB   16#0A, SMB89
+	MOVW   +100, SMW90
+	MOVW   +50, SMW92
+	MOVB   20, SMB94
+Network 6
+//启动接收 RCV（端口0）
+	LD     SM0.1
+	RCV    VB750, 0
+Network 7
+//关联接收完成中断（事件23）
+	LD     SM0.1
+	ATCH   INT_3, 23
+Network 8
+//以太网 S7 通信：GET 读远程站数据（表首地址 VB780）
+//注意 S7-200 SMART 用 GET/PUT，没有 S7-200 的 NETR/NETW
+	LD     M2.1
+	GET    VB780
+Network 9
+//以太网 S7 通信：PUT 把本站产量写到远程站（表首地址 VB800）
+	LD     M2.1
+	PUT    VB800
+Network 10
+//通信超时监视
+	LDW>   VW904, +0
+	TON    T51, +100
+Network 11
+//超时置通信故障
+	LD     T51
+	S      V600.5, 1
+Network 12
+//读取本站通信地址 GPA（GET_ADDR，端口0）
+	LD     SM0.1
+	GPA    VB820, 0
+Network 13
+//设置本站通信地址 SPA（SET_ADDR）—— 仅调试时由 M3.4 触发
+	LD     M3.4
+	EU
+	SPA    2, 0
+END_SUBROUTINE_BLOCK

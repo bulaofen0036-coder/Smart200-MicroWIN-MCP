@@ -1,0 +1,54 @@
+SUBROUTINE_BLOCK 时钟与统计:SBR11
+TITLE=实时时钟 TODR/TODW 与运行统计
+BEGIN
+Network 1
+//读实时时钟到 VB860 起 8 字节（年月日时分秒星期）
+	LD     SM0.0
+	TODR   VB860
+Network 2
+//校时：由上位机写入 VB870 起 8 字节后触发
+	LD     M3.7
+	EU
+	TODW   VB870
+Network 3
+//运行秒计（仅运行中累加）
+	LD     SM0.5
+	EU
+	A      M0.1
+	INCD   VD880
+Network 4
+//满 3600s 进位为小时并清秒
+	LDD>=  VD880, +3600
+	INCD   VD884
+	MOVD   +0, VD880
+Network 5
+//累计 2000 小时提示保养
+	LDD>=  VD884, +2000
+	S      V602.0, 1
+Network 6
+//整点（分=0）锁存班次产量
+	LDB=   VB864, 16#00
+	MOVD   VD140, VD888
+Network 7
+//整点清当班产量
+	LDB=   VB864, 16#00
+	MOVD   +0, VD140
+Network 8
+//时钟数据打包送 HMI 显示区
+	LD     SM0.0
+	BMB    VB860, VB890, 8
+Network 9
+//平均节拍 = 运行秒 / 产量
+	LDD>   VD888, +0
+	MOVD   VD880, VD894
+	/D     VD888, VD894
+Network 10
+//扩展读时钟 TODRX：带夏令时信息的 19 字节缓冲区
+	LD     SM0.0
+	TODRX  VB1200
+Network 11
+//扩展写时钟 TODWX：由上位机下发后校时
+	LD     M3.7
+	ED
+	TODWX  VB1220
+END_SUBROUTINE_BLOCK

@@ -1,0 +1,66 @@
+ORGANIZATION_BLOCK MAIN:OB1
+TITLE=主程序 —— 双工位自动上料·加工·出料站
+BEGIN
+Network 1
+//首次扫描：一次性初始化（参数、顺控步、中断连接）
+	LD     SM0.1
+	CALL   系统初始化
+Network 2
+//每扫描：输入信号处理（位逻辑、边沿、堆栈）
+	LD     SM0.0
+	CALL   输入信号处理
+Network 3
+//每扫描：定时器与计数器
+	LD     SM0.0
+	CALL   定时与计数
+Network 4
+//自动模式(I0.3)且运行允许(M0.0)时才执行 SCR 顺控
+	LD     I0.3
+	A      M0.0
+	CALL   顺控主流程
+Network 5
+//手动模式：点动各执行机构
+	LDN    I0.3
+	CALL   手动操作
+Network 6
+//模拟量采集、标定、限幅、偏差
+	LD     SM0.0
+	CALL   模拟量处理
+Network 7
+//数学与逻辑运算演示
+	LD     SM0.0
+	CALL   数学与逻辑
+Network 8
+//数据处理：传送、块操作、表格、码制转换
+	LD     SM0.0
+	CALL   数据处理
+Network 9
+//报警与诊断：比较、跳转、循环
+	LD     SM0.0
+	CALL   报警与诊断
+Network 10
+//通信：自由口收发与 S7 网络读写
+	LD     SM0.0
+	CALL   通信处理
+Network 11
+//高速计数与脉冲输出
+	LD     SM0.0
+	CALL   高速与脉冲
+Network 12
+//实时时钟与运行统计
+	LD     SM0.0
+	CALL   时钟与统计
+Network 13
+//字符串处理：报文与提示文本拼装
+	LD     SM0.0
+	CALL   字符串处理
+Network 14
+//心跳输出：1s 闪烁，供上位机判断 PLC 存活
+	LD     SM0.5
+	=      Q1.7
+Network 15
+//运行指示：顺控非初始步即视为运行中
+	LDN    S0.0
+	A      M0.1
+	=      Q0.6
+END_ORGANIZATION_BLOCK

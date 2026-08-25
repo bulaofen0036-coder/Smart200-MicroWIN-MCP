@@ -1,0 +1,98 @@
+SUBROUTINE_BLOCK 报警与诊断:SBR8
+TITLE=比较指令全集 + 跳转 JMP/LBL + 循环 FOR/NEXT + 条件返回 CRET
+BEGIN
+Network 1
+//诊断未使能则条件返回 CRET
+	LDN    V0.0
+	CRET
+Network 2
+//字节比较：报警字为零 = 无报警
+	LDB=   VB600, 16#00
+	=      M2.3
+Network 3
+//字节比较：不等于
+	LDB<>  VB600, 16#00
+	=      M2.4
+Network 4
+//整数比较：大于
+	LDW>   VW130, +1000
+	=      M2.5
+Network 5
+//整数比较：大于等于
+	LDW>=  VW130, +500
+	=      M2.6
+Network 6
+//整数比较：小于
+	LDW<   VW130, +10
+	=      M2.7
+Network 7
+//整数比较：小于等于
+	LDW<=  VW130, +5
+	=      M3.2
+Network 8
+//双整数比较：大于
+	LDD>   VD140, +10000
+	=      M3.3
+Network 9
+//双整数比较：等于
+	LDD=   VD140, +0
+	=      M3.4
+Network 10
+//实数比较：上限
+	LDR>=  VD212, 80.0
+	S      V600.0, 1
+Network 11
+//实数比较：下限
+	LDR<   VD212, 20.0
+	S      V600.1, 1
+Network 12
+//超限持续 5s 才确认为报警（防抖）
+	LD     V600.0
+	TON    T50, +50
+Network 13
+//确认后置硬报警位
+	LD     T50
+	S      V601.0, 1
+Network 14
+//报警汇总驱动报警指示
+	LD     V600.0
+	O      V600.1
+	O      V601.0
+	O      M3.0
+	=      Q0.7
+Network 15
+//报警确认：清报警字并清急停标志
+	LD     I1.7
+	EU
+	FILL   +0, VW600, 4
+Network 16
+	LD     I1.7
+	EU
+	R      M3.0, 1
+Network 17
+//无报警时跳过统计段
+	LDB=   VB600, 16#00
+	JMP    1
+Network 18
+//FOR 循环：扫描报警字 8 个位做次数统计
+	LD     SM0.0
+	FOR    VW610, +1, +8
+Network 19
+//循环体
+	LD     SM0.0
+	INCW   VW612
+Network 20
+	NEXT
+Network 21
+//跳转标号
+	LBL    1
+Network 22
+//长扫描后喂看门狗
+	LD     SM0.0
+	WDR
+Network 23
+//严重故障停机（M3.5 由上位机置位，正常不动作）
+	LD     M3.5
+	A      M3.0
+	STOP
+END_SUBROUTINE_BLOCK

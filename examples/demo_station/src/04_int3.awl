@@ -1,0 +1,16 @@
+INTERRUPT_BLOCK INT_3:INT3
+TITLE=自由口接收完成中断 —— 事件23（端口0 接收完成）
+BEGIN
+Network 1
+//接收帧计数
+	LD     SM0.0
+	INCW   VW904
+Network 2
+//SMB86=16#20 表示收到结束字符，正常帧
+	LDB=   SMB86, 16#20
+	MOVB   1, VB906
+Network 3
+//重新启动接收，形成连续收发
+	LD     SM0.0
+	RCV    VB750, 0
+END_INTERRUPT_BLOCK

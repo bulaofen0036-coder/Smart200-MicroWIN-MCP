@@ -15,6 +15,7 @@
   任何一关不过就如实报错，不吹"成功"。
 """
 
+import hashlib
 import os
 import re
 import shutil
@@ -107,6 +108,17 @@ def _read(path):
         return raw.decode("utf-8", "replace")
 
 
+def _fingerprint(path):
+    """工程文件指纹 —— 只用来判断"内容有没有变"，不需要密码学强度。"""
+    if not os.path.exists(path):
+        return None
+    h = hashlib.md5()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            h.update(chunk)
+    return "%d:%s" % (os.path.getsize(path), h.hexdigest())
+
+
 def deploy(awl_files, project_path=None, template=None, open_after=False,
            verify_block=None, symbols=None):
     """把若干 AWL 块部署进一个工程并四关验证。
@@ -121,6 +133,7 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
     """
     report = {"stage1_structure": None, "stage2_compile": None,
               "stage3_engine_validate": None, "stage4_roundtrip": None,
+              "stage5_persisted": None,
               "passed": False, "detail": {}}
     if verify_block:
         report["detail"]["note"] = "verify_block 已废弃：现在每个块都单独往返核对"
@@ -209,12 +222,21 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
     cmds.append("COMPILE")
     cmds += ["VALIDATE %s|0" % blocks[f] for f in awl_files]
     cmds += ["EXPORT %s|%s" % (blocks[f], out_awl[f]) for f in awl_files]
-    # 带符号时必须 SAVEAS：PRJ_Save 不落盘变量表（实测存完重开符号全没）。
+    # 落盘【一律】用 SAVEAS，绝不用 SAVE —— 两个已实测的理由：
+    #   1) PRJ_Save 不落盘变量表（带符号时存完重开符号全没）；
+    #   2) 对 .smartV3 工程，PRJ_Save 会把内容【静默写进同名的 .smart(V2)】，
+    #      原 .smartV3 字节不变，而且照样 ret=0。
+    #      2026-08-25 实测：模板 18511B 的 savetest.smartV3 导入一个块后 SAVE，
+    #      MD5 纹丝不动，旁边多出 21117B 的 savetest.smart —— 四关全绿但工程是空的。
     # SAVEAS 到临时文件，实例退出后再替换回去。
     # 临时文件必须保持同样的扩展名 —— SAVEAS 是按扩展名认格式的
     _stem, _ext = os.path.splitext(project_path)
-    tmp_proj = (_stem + "_saveas_tmp" + _ext) if symbols else None
-    cmds.append(("SAVEAS " + tmp_proj) if symbols else "SAVE")
+    tmp_proj = _stem + "_saveas_tmp" + _ext
+    cmds.append("SAVEAS " + tmp_proj)
+
+    # 第1~4关全在同一个内存实例里判，证明不了"落没落盘"。
+    # 记下导入前的文件指纹，收工后比对 —— 这是独立于软件自报成功的判据。
+    before_fp = _fingerprint(project_path)
 
     pid = engine.launch_instance(project_path)
     try:
@@ -223,8 +245,15 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
         if not open_after:
             engine.kill_instance(pid)
 
-    if symbols and tmp_proj and os.path.exists(tmp_proj):
+    # ---- 落盘：SAVEAS 的产物换回 project_path，并留下证据供第5关判定 ----
+    persisted = {"saveas_target": tmp_proj, "produced": os.path.exists(tmp_proj)}
+    if persisted["produced"]:
+        persisted["bytes"] = os.path.getsize(tmp_proj)
         os.replace(tmp_proj, project_path)
+    # SAVE 的老毛病会在这里留下痕迹：同名 .smart 是 PRJ_Save 干的，不该出现
+    stray = _stem + ".smart"
+    if _ext.lower() != ".smart" and os.path.exists(stray):
+        persisted["stray_v2_file"] = stray
 
     report["detail"]["log"] = enginelog.ret_lines(log)
     if symbols:
@@ -293,7 +322,27 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
     report["detail"]["roundtrip"] = rt
 
     shutil.rmtree(tmpdir, ignore_errors=True)
-    report["passed"] = all_ok
+
+    # ---- 第5关：真的落盘了吗 ----
+    # 前四关全在同一个内存实例里问软件自己，软件说"存好了"不等于文件变了。
+    # 实测过 SAVE 报 ret=0 但把内容写进同名 .smart、原 .smartV3 字节不变的情况。
+    after_fp = _fingerprint(project_path)
+    persisted["fingerprint_before"] = before_fp
+    persisted["fingerprint_after"] = after_fp
+    ok5 = bool(persisted.get("produced")) and after_fp != before_fp
+    report["stage5_persisted"] = "PASS" if ok5 else "FAIL"
+    report["detail"]["persisted"] = persisted
+    if not ok5:
+        report["detail"]["persist_hint"] = (
+            "程序在内存里是对的，但没写进 %s（文件指纹没变）。"
+            "别用 SAVE —— 对 .smartV3 工程它会把内容静默存成同名 .smart(V2) 还回 ret=0。"
+            % os.path.basename(project_path))
+    if persisted.get("stray_v2_file"):
+        report["detail"]["persist_warn"] = (
+            "旁边冒出了 %s —— 这是 PRJ_Save 的手笔，说明有代码回退用了 SAVE。"
+            % os.path.basename(persisted["stray_v2_file"]))
+
+    report["passed"] = all_ok and ok5
     report["project"] = project_path
     if open_after:
         report["opened_pid"] = pid
@@ -349,6 +398,12 @@ def set_symbols(project_path, symbols):
     原理：I/O 变量表里每个 I/O 点本来就列好了、地址是现成的，所以是【改那一行的名字】，
     不是新建行 —— 在空行上 SetAddressValue 恒报 6019，新行设不了地址。
     落盘必须 SAVEAS：PRJ_Save 不保存变量表（实测存完重开符号全没）。
+
+    ⚠ 对【已经有程序】的工程事后改符号表会打断程序与符号表的绑定：
+    符号一条条都 ok、GVTCOMPILE 也 ret=0，但随后 COMPILE 报 -1610612428（交叉引用），
+    而各块 POU_IsValidNet 全是 invalid=0 —— 程序本身没坏，坏的是绑定关系。
+    （2026-08-25 实测；正解是 smart_deploy(symbols=...)，符号在导入程序【之前】设。）
+    所以这里改完会补一次 COMPILE 验证；编译不过就【自动回滚】，不把坏工程留给你。
     """
     project_path = os.path.abspath(project_path)
     if not os.path.exists(project_path):
@@ -357,15 +412,36 @@ def set_symbols(project_path, symbols):
     stem, ext = os.path.splitext(project_path)
     tmp = stem + "_saveas_tmp" + ext
     cmds = ["SYMSET %s|%s" % (addr, name) for name, addr in symbols.items()]
-    cmds += ["GVTCOMPILE x", "SAVEAS " + tmp]
+    # COMPILE 排在 SAVEAS 之前：编译不过就别存了
+    cmds += ["GVTCOMPILE x", "COMPILE", "SAVEAS " + tmp]
     pid = engine.launch_instance(project_path)
     try:
         log = engine.run_script(pid, cmds)
     finally:
         engine.kill_instance(pid)
-    if os.path.exists(tmp):
+
+    compile_ok = enginelog.compiled(log)
+    syms_ok = enginelog.symbols_ok(log, symbols) and enginelog.done(log)
+    result = {"symbols": enginelog.symbols(log),
+              "compile_ok": compile_ok,
+              "completed": enginelog.done(log),
+              "backup": backup}
+
+    if compile_ok and os.path.exists(tmp):
         os.replace(tmp, project_path)
-    return {"symbols": enginelog.symbols(log),
-            "all_ok": enginelog.symbols_ok(log, symbols) and enginelog.done(log),
-            "completed": enginelog.done(log),
-            "backup": backup}
+        result["all_ok"] = syms_ok
+        return result
+
+    # 编译没过 —— 工程原样退回，不留半成品
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    shutil.copy(backup, project_path)
+    result["all_ok"] = False
+    result["rolled_back"] = True
+    result["hint"] = (
+        "符号写进去了，但工程随后编译不过，已把工程回滚到改动前。"
+        "对已有程序的工程事后改符号表会打断程序与符号表的绑定 —— "
+        "正确做法是从空白模板走 smart_deploy(awl_files=[...], symbols={...})，"
+        "顺序为 SYMSET → GVTCOMPILE → IMPORTPOU → COMPILE → SAVEAS，"
+        "符号必须在导入程序【之前】设好。")
+    return result

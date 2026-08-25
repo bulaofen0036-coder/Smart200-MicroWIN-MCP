@@ -215,13 +215,15 @@ def smart_validate_project(project_path: str, block_names: list[str]) -> dict:
 def smart_deploy(awl_files: list[str], project_path: str = "",
                  symbols: dict = None, verify_block: str = "",
                  open_after: bool = False) -> dict:
-    """【全自动·推荐入口】把 AWL 块部署进工程并做四关验证，一步到位。
+    """【全自动·推荐入口】把 AWL 块部署进工程并做五关验证，一步到位。
 
-    四关（任何一关不过都会如实报 FAIL，不吹成功）：
+    五关（任何一关不过都会如实报 FAIL，不吹成功）：
       1 静态预检   离线秒级，先挡明显问题
       2 导入+编译  抓语法/交叉引用错误（CALL/ATCH 指向不存在的块）
       3 引擎真值   问软件本人 POU_IsValidNet 有无无效程序段 ← 权威判据
       4 往返导出   逐块核对指令与网络数，抓被软件静默丢弃的内容
+      5 落盘校验   比对工程文件指纹，证明【真的写进磁盘】了 ← 前四关都在同一个
+                   内存实例里问软件自己，软件说"存好了"不等于文件变了
 
     awl_files 顺序：主程序(ORGANIZATION_BLOCK/OB1)会自动排到最前（导入 OB1 会替换
     整个程序集）；其余按依赖排，被 CALL 的子程序、被 ATCH 的中断程序排在引用者之前。
@@ -245,6 +247,12 @@ def smart_set_symbols(project_path: str, symbols: dict) -> dict:
     做法：I/O 变量表里每个 I/O 点本来就有一行、地址是现成的，这里改的是那一行的名字。
     ⚠ 只支持 CPU 上实际存在的 I/Q 点；地址找不到对应行会如实报 ok=False，不会假装成功。
     ⚠ 会修改并另存工程（符号表必须靠 SAVEAS 落盘，普通保存存不下来）。
+    ⚠ 只适合【还没有程序】的工程。对已有程序的工程事后改符号表，会打断程序与
+      符号表的绑定：符号条条 ok、GVTCOMPILE 也 ret=0，但随后 COMPILE 报
+      -1610612428（各块 POU_IsValidNet 却全是 invalid=0 —— 程序没坏，绑定坏了）。
+      本工具改完会补一次 COMPILE 验证，不过就【自动回滚】，不把坏工程留给你。
+      要给带程序的工程加符号，请走 smart_deploy(awl_files=[...], symbols={...})，
+      它的顺序是 SYMSET → GVTCOMPILE → IMPORTPOU → COMPILE → SAVEAS。
     """
     return autoflow.set_symbols(project_path, symbols)
 
@@ -283,8 +291,11 @@ def smart_run_workflow(project_path: str, commands: list[str]) -> dict:
       "IMPORT 文件路径"        通用导入
       "COMPILE"                编译整个工程
       "VALIDATE 块名|0"        问引擎该块有无无效程序段（权威判据）
-      "SAVE"                   保存工程
-      "SAVEAS 路径"            另存工程
+      "SAVE"                   ⚠ 别用：对 .smartV3 工程它会把内容【静默写进同名的
+                               .smart(V2)】、原 .smartV3 字节不变，而且照样 ret=0。
+                               实测过"四关全绿但工程是空的"。落盘一律用 SAVEAS。
+      "SAVEAS 完整路径"        另存工程 —— 这才是唯一可靠的落盘方式，
+                               临时文件也要保持同样扩展名（SAVEAS 按扩展名认格式）
     返回执行日志里各步的返回码摘要。这是最灵活的入口，可把"导入→编译→导出确认"串成一条。
     ⚠ 含导入/保存时会修改工程，请用副本或新工程。
     """

@@ -1,0 +1,18 @@
+INTERRUPT_BLOCK INT_2:INT2
+TITLE=高速计数中断 —— 事件12（HSC0 当前值=预置值）
+BEGIN
+Network 1
+//到达预置长度：置到位标志并累计
+	LD     SM0.0
+	S      M3.1, 1
+	INCD   VD932
+Network 2
+//重装初值与控制字节（仅更新当前值）
+	LD     SM0.0
+	MOVD   +0, SMD38
+	MOVB   16#C0, SMB37
+Network 3
+//重新使能 HSC0
+	LD     SM0.0
+	HSC    0
+END_INTERRUPT_BLOCK

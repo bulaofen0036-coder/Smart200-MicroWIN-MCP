@@ -1,0 +1,8 @@
+# AWL 是 STEP 7-Micro/WIN SMART 的程序块文本：GBK 编码 + CRLF 行尾。
+# 必须禁掉 git 的行尾自动转换 —— 否则在 Linux/Mac 上 clone 出来变成 LF，
+# 软件导入会出问题。-text = 按字节原样存取，不做任何转换。
+*.awl -text
+
+# 工程文件是二进制，别让 git 当文本处理
+*.smart  binary
+*.smartV3 binary

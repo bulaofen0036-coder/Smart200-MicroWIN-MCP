@@ -1,0 +1,17 @@
+INTERRUPT_BLOCK INT_0:INT0
+TITLE=急停中断 —— 事件0（I0.0 上升沿）
+BEGIN
+Network 1
+//立即封锁全部输出，不等扫描周期结束
+	LD     SM0.0
+	RI     Q0.0, 8
+Network 2
+//立即封锁 Q1 组
+	LD     SM0.0
+	RI     Q1.0, 8
+Network 3
+//置急停标志并累计急停次数
+	LD     SM0.0
+	S      M3.0, 1
+	INCD   VD900
+END_INTERRUPT_BLOCK

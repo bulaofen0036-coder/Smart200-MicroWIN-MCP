@@ -1,0 +1,57 @@
+SUBROUTINE_BLOCK 定时与计数:SBR2
+TITLE=定时器与计数器全集 —— TON/TOF/TONR、CTU/CTD/CTUD
+BEGIN
+Network 1
+//接通延时 TON（100ms 基准，T37）
+	LD     M1.0
+	TON    T37, +50
+Network 2
+//断开延时 TOF（100ms 基准，T38）
+	LD     M1.1
+	TOF    T38, +30
+Network 3
+//保持型接通延时 TONR（100ms 基准，T5）—— 累计运行时间
+	LD     M0.1
+	TONR   T5, +1000
+Network 4
+//1ms 分辨率定时器 T32，用于高速节拍
+	LD     M0.1
+	TON    T32, +500
+Network 5
+//10ms 分辨率定时器 T33
+	LD     M1.2
+	TON    T33, +100
+Network 6
+//定时到输出
+	LD     T37
+	=      M2.0
+Network 7
+//TONR 需显式复位
+	LD     I0.4
+	R      T5, 1
+Network 8
+//加计数 CTU：CU=工件脉冲，R=复位按钮
+	LD     M1.5
+	LD     I0.4
+	CTU    C0, +100
+Network 9
+//减计数 CTD：CD=工件脉冲，LD=复位装入预置值
+	LD     M1.5
+	LD     I0.4
+	CTD    C1, +50
+Network 10
+//加减计数 CTUD：CU=进料脉冲，CD=出料脉冲，R=复位
+	LD     M1.5
+	LD     M0.3
+	LD     I0.4
+	CTUD   C2, +200
+Network 11
+//计数到位输出
+	LD     C0
+	=      M2.1
+Network 12
+//满批复位计数器并累加批次
+	LD     C0
+	R      C0, 1
+	INCW   VW132
+END_SUBROUTINE_BLOCK

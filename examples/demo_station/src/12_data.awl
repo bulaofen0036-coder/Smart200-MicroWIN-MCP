@@ -1,0 +1,98 @@
+SUBROUTINE_BLOCK 数据处理:SBR7
+TITLE=传送/块操作/表格/码制转换/字符串
+BEGIN
+Network 1
+//单点传送 MOVB / MOVW / MOVD / MOVR
+	LD     SM0.0
+	MOVB   VB400, VB401
+	MOVW   VW402, VW404
+	MOVD   VD406, VD410
+	MOVR   VD414, VD418
+Network 2
+//块传送 BMB / BMW / BMD —— 配方成组搬运
+	LD     SM0.0
+	BMB    VB420, VB440, 16
+	BMW    VW460, VW480, 8
+	BMD    VD500, VD520, 4
+Network 3
+//字节交换 SWAP：大小端转换
+	LD     SM0.0
+	SWAP   VW540
+Network 4
+//存储器填充 FILL：清一片字区
+	LD     I0.4
+	FILL   +0, VW550, 10
+Network 5
+//表格：ATT 把当前产量加入表尾
+	LD     M1.5
+	ATT    VW130, VW560
+Network 6
+//表格：FIFO 先进先出取数
+	LD     I1.4
+	FIFO   VW560, VW600
+Network 7
+//表格：LIFO 后进先出取数
+	LD     I1.5
+	LIFO   VW560, VW602
+Network 8
+//BCD 与整数互转（拨码盘/数码管）
+	LD     SM0.0
+	BCDI   VW606
+	IBCD   VW608
+Network 9
+//字节←→整数 BTI / ITB
+	LD     SM0.0
+	BTI    VB610, VW612
+	ITB    VW612, VB614
+Network 10
+//整数←→双整数 ITD / DTI
+	LD     SM0.0
+	ITD    VW616, VD618
+	DTI    VD618, VW622
+Network 11
+//双整数←→实数 DTR / ROUND
+	LD     SM0.0
+	DTR    VD624, VD628
+	ROUND  VD628, VD632
+Network 12
+//ASCII←→十六进制 ATH / HTA
+	LD     SM0.0
+	ATH    VB640, VB650, 8
+	HTA    VB650, VB660, 4
+Network 13
+//七段码 SEG：驱动数码管
+	LD     SM0.0
+	SEG    VB700, VB701
+Network 14
+//立即读物理输入字节 BIR
+	LD     SM0.0
+	BIR    IB1, VB710
+Network 15
+//立即写物理输出字节 BIW —— 仅强制输出测试模式用（M3.6 平时不置位）
+	LD     M3.6
+	BIW    VB711, QB1
+Network 16
+//整数转 ASCII 字符串 ITA（送 HMI / 串口显示）
+	LD     SM0.0
+	ITA    VW130, VB672, 16#0B
+Network 17
+//双整数转 ASCII 字符串 DTA
+	LD     SM0.0
+	DTA    VD140, VB684, 16#0B
+Network 18
+//实数转 ASCII 字符串 RTA
+	LD     SM0.0
+	RTA    VD212, VB694, 16#0B
+Network 19
+//译码 DECO：把数值转成对应位置1（步序→指示灯字）
+	LD     SM0.0
+	DECO   VB702, VW704
+Network 20
+//编码 ENCO：找出最低置位位的位号（报警字→报警号）
+	LD     SM0.0
+	ENCO   VW600, VB708
+Network 21
+//表格查找 FND=：在产量表里找等于设定值的记录
+	LD     I1.6
+	FND=   VW560, +100, VW604
+END_SUBROUTINE_BLOCK

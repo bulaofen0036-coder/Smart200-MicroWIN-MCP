@@ -12,7 +12,7 @@
     · CTUD       用 3 个 LD（CU/CD/R），额外消耗 2
   rung 数必须 == 1，否则该网络无效。
 
-  例外：只含 NEXT / LBL 等独立指令、不含任何 LD 的网络是合法的。
+  例外：只含 NEXT / LBL / LSCR / SCRE 等独立指令、不含任何 LD 的网络是合法的。
   另：FOR 与 NEXT 不能出现在同一个网络（NEXT 必须单独成段）。
 
 验证依据：用 demo_v2（用户截图确认无效网络 = 2,3,4,14,15,19,22,25,26）
@@ -31,7 +31,9 @@ _LD_RE = re.compile(r"^LD[NIA]?$|^LD[BWDR][=<>]{1,2}$|^LDN$")
 #   块操作 OLD/ALD：把两个逻辑块合并成 1 条 rung，各吃掉 1 个 LD
 _MULTI_INPUT = {"CTU": 1, "CTD": 1, "CTUD": 2, "OLD": 1, "ALD": 1}
 # 不需要 rung 的独立指令
-_STANDALONE = {"NEXT", "LBL", "MEND", "END"}
+# LSCR / SCRE 是顺控段的开始与结束，在 LAD 里是无左母线触点的独立框，
+# 单独成网络就是正确形态（已用引擎 POU_IsValidNet 判定 8 网络 0 无效验证）。
+_STANDALONE = {"NEXT", "LBL", "MEND", "END", "LSCR", "SCRE"}
 
 
 def _is_ld(op):
@@ -75,6 +77,21 @@ def _produces_output(op):
     return True
 
 
+# S7-200 有、但 S7-200 SMART 【没有】的助记符。
+# 这类词软件不认识，于是当成"未定义的符号名"处理 —— 不报编译错，
+# 而是让整个网络变成无效程序段，只有第3关 POU_IsValidNet 抓得到。
+# 放在这里是为了离线秒级挡住，省一趟真机往返。
+#
+# 收录标准：必须是【引擎实测】判定为无效网络的，不收凭印象怀疑的。
+# 实测方法：一个网络放一条待测指令，导入后 VALIDATE，无效的就是不支持的。
+# 2026-08-25 实测 22 条，只有下面这两个不支持；GPA/SPA/ITA/DTA/RTA/
+# SLEN/SCPY/SCAT/SSCPY/SFND/CFND/DECO/ENCO/BIW/FND=/TODRX/TODWX/PID 全部支持。
+_NOT_IN_SMART = {
+    "NETR": "S7-200 的 PPI 网络读，SMART 没有；以太网 S7 通信请改用 GET（单操作数：GET VB780）",
+    "NETW": "S7-200 的 PPI 网络写，SMART 没有；以太网 S7 通信请改用 PUT（单操作数：PUT VB800）",
+}
+
+
 def check_network(net):
     """检查单个网络。返回 (是否有效, 原因)。
 
@@ -87,6 +104,10 @@ def check_network(net):
     ops = net["ops"]
     if not ops:
         return True, "空网络"
+
+    for op in ops:
+        if op in _NOT_IN_SMART:
+            return False, f"{op} 在 S7-200 SMART 上不存在 —— {_NOT_IN_SMART[op]}"
 
     if "FOR" in ops and "NEXT" in ops:
         return False, "FOR 与 NEXT 在同一网络（NEXT 必须单独成段）"

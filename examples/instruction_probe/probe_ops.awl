@@ -1,0 +1,92 @@
+SUBROUTINE_BLOCK 指令支持性探针:SBR25
+TITLE=每网络一条待测指令
+BEGIN
+Network 1
+//NETR
+	LD     SM0.0
+	NETR   VB780, 0
+Network 2
+//NETR_1op
+	LD     SM0.0
+	NETR   VB780
+Network 3
+//NETW
+	LD     SM0.0
+	NETW   VB800, 0
+Network 4
+//NETW_1op
+	LD     SM0.0
+	NETW   VB800
+Network 5
+//GPA
+	LD     SM0.0
+	GPA    VB820, 0
+Network 6
+//SPA
+	LD     SM0.0
+	SPA    2, 0
+Network 7
+//ITA
+	LD     SM0.0
+	ITA    VW670, VB672, 16#0B
+Network 8
+//DTA
+	LD     SM0.0
+	DTA    VD680, VB684, 16#0B
+Network 9
+//RTA
+	LD     SM0.0
+	RTA    VD690, VB694, 16#0B
+Network 10
+//SLEN
+	LD     SM0.0
+	SLEN   VB720, VB750
+Network 11
+//SCPY
+	LD     SM0.0
+	SCPY   VB720, VB760
+Network 12
+//SCAT
+	LD     SM0.0
+	SCAT   VB740, VB760
+Network 13
+//SSCPY
+	LD     SM0.0
+	SSCPY  VB720, 1, 4, VB770
+Network 14
+//SFND
+	LD     SM0.0
+	SFND   VB720, VB740, VB790
+Network 15
+//CFND
+	LD     SM0.0
+	CFND   VB720, VB741, VB792
+Network 16
+//DECO
+	LD     SM0.0
+	DECO   VB702, VW704
+Network 17
+//ENCO
+	LD     SM0.0
+	ENCO   VW706, VB708
+Network 18
+//BIW
+	LD     SM0.0
+	BIW    VB711, QB1
+Network 19
+//FND_EQ
+	LD     SM0.0
+	FND=   VW560, +100, VW604
+Network 20
+//TODRX
+	LD     SM0.0
+	TODRX  VB900
+Network 21
+//TODWX
+	LD     SM0.0
+	TODWX  VB910
+Network 22
+//PID
+	LD     SM0.0
+	PID    VB300, 0
+END_SUBROUTINE_BLOCK

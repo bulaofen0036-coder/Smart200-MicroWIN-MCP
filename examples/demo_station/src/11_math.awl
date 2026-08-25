@@ -1,0 +1,93 @@
+SUBROUTINE_BLOCK 数学与逻辑:SBR6
+TITLE=运算指令全集 —— 四则、增减、字节/字/双字逻辑、移位与循环移位
+BEGIN
+Network 1
+//整数四则 +I -I *I /I
+	LD     SM0.0
+	MOVW   VW300, VW302
+	+I     +100, VW302
+	-I     +50, VW302
+	*I     +2, VW302
+	/I     +3, VW302
+Network 2
+//双整数四则 +D -D *D /D
+	LD     SM0.0
+	MOVD   VD304, VD308
+	+D     +1000, VD308
+	-D     +200, VD308
+	*D     +3, VD308
+	/D     +7, VD308
+Network 3
+//整数相乘得双整数 MUL
+	LD     SM0.0
+	MOVW   VW312, VW318
+	MUL    +100, VD316
+Network 4
+//整数相除得商与余数 DIV
+	LD     SM0.0
+	MOVW   VW320, VW326
+	DIV    +7, VD324
+Network 5
+//实数四则 +R -R *R /R
+	LD     SM0.0
+	MOVR   VD330, VD334
+	+R     1.5, VD334
+	-R     0.5, VD334
+	*R     2.0, VD334
+	/R     4.0, VD334
+Network 6
+//加一：INCB / INCW / INCD
+	LD     SM0.0
+	INCB   VB340
+	INCW   VW342
+	INCD   VD344
+Network 7
+//减一：DECB / DECW / DECD
+	LD     SM0.0
+	DECB   VB348
+	DECW   VW350
+	DECD   VD352
+Network 8
+//字节逻辑 ANDB ORB XORB INVB
+	LD     SM0.0
+	ANDB   16#0F, VB360
+	ORB    16#F0, VB360
+	XORB   16#FF, VB360
+	INVB   VB360
+Network 9
+//字逻辑 ANDW ORW XORW INVW
+	LD     SM0.0
+	ANDW   16#00FF, VW362
+	ORW    16#FF00, VW362
+	XORW   16#FFFF, VW362
+	INVW   VW362
+Network 10
+//双字逻辑 ANDD ORD XORD INVD
+	LD     SM0.0
+	ANDD   16#0000FFFF, VD364
+	ORD    16#FFFF0000, VD364
+	XORD   16#FFFFFFFF, VD364
+	INVD   VD364
+Network 11
+//移位 SLB/SRB SLW/SRW SLD/SRD
+	LD     SM0.0
+	SLB    VB368, 2
+	SRB    VB369, 1
+	SLW    VW370, 4
+	SRW    VW372, 2
+	SLD    VD374, 8
+	SRD    VD378, 4
+Network 12
+//循环移位 RLB/RRB RLW/RRW RLD/RRD
+	LD     SM0.0
+	RLB    VB382, 1
+	RRB    VB383, 1
+	RLW    VW384, 2
+	RRW    VW386, 2
+	RLD    VD388, 4
+	RRD    VD392, 4
+Network 13
+//移位寄存器 SHRB：输送线工件位置跟踪（16 位）
+	LD     M1.5
+	SHRB   M0.3, V396.0, +16
+END_SUBROUTINE_BLOCK

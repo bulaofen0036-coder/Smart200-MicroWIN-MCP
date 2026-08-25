@@ -1,0 +1,1178 @@
+ORGANIZATION_BLOCK MAIN:OB1
+TITLE=主程序 —— 双工位自动上料·加工·出料站
+BEGIN
+Network 1 
+//首次扫描：一次性初始化（参数、顺控步、中断连接）
+	LD     First_Scan_On
+	CALL   系统初始化
+Network 2 
+//每扫描：输入信号处理（位逻辑、边沿、堆栈）
+	LD     Always_On
+	CALL   输入信号处理
+Network 3 
+//每扫描：定时器与计数器
+	LD     Always_On
+	CALL   定时与计数
+Network 4 
+//自动模式(I0.3)且运行允许(M0.0)时才执行 SCR 顺控
+	LD     自动手动切换
+	A      M0.0
+	CALL   顺控主流程
+Network 5 
+//手动模式：点动各执行机构
+	LDN    自动手动切换
+	CALL   手动操作
+Network 6 
+//模拟量采集、标定、限幅、偏差
+	LD     Always_On
+	CALL   模拟量处理
+Network 7 
+//数学与逻辑运算演示
+	LD     Always_On
+	CALL   数学与逻辑
+Network 8 
+//数据处理：传送、块操作、表格、码制转换
+	LD     Always_On
+	CALL   数据处理
+Network 9 
+//报警与诊断：比较、跳转、循环
+	LD     Always_On
+	CALL   报警与诊断
+Network 10 
+//通信：自由口收发与 S7 网络读写
+	LD     Always_On
+	CALL   通信处理
+Network 11 
+//高速计数与脉冲输出
+	LD     Always_On
+	CALL   高速与脉冲
+Network 12 
+//实时时钟与运行统计
+	LD     Always_On
+	CALL   时钟与统计
+Network 13 
+//字符串处理：报文与提示文本拼装
+	LD     Always_On
+	CALL   字符串处理
+Network 14 
+//心跳输出：1s 闪烁，供上位机判断 PLC 存活
+	LD     Clock_1s
+	=      心跳输出
+Network 15 
+//运行指示：顺控非初始步即视为运行中
+	LDN    S0.0
+	A      M0.1
+	=      运行指示
+END_ORGANIZATION_BLOCK
+
+SUBROUTINE_BLOCK 系统初始化:SBR0
+TITLE=上电初始化 —— 工艺参数、顺控步、中断连接
+BEGIN
+Network 1 
+//工艺定时参数（单位 100ms）
+	LD     Always_On
+	MOVW   +100, VW100
+	MOVW   +30, VW102
+	MOVW   +200, VW104
+	MOVW   +150, VW106
+	MOVW   +20, VW108
+Network 2 
+//模拟量量程：AI 原始值下限/上限，工程量下限/上限
+	LD     Always_On
+	MOVW   +6400, VW110
+	MOVW   +32000, VW112
+	MOVR   0.0, VD114
+	MOVR   100.0, VD118
+Network 3 
+//设定值与允许偏差
+	LD     Always_On
+	MOVR   75.0, VD256
+	MOVR   5.0, VD264
+Network 4 
+//产量与统计清零
+	LD     Always_On
+	MOVW   +0, VW130
+	MOVD   +0, VD140
+	MOVD   +0, VD880
+	MOVD   +0, VD884
+Network 5 
+//报警字与状态位清零
+	LD     Always_On
+	FILL   +0, VW600, 8
+	MOVB   0, MB0
+	MOVB   0, MB1
+	MOVB   0, MB2
+	MOVB   0, MB3
+Network 6 
+//顺控：复位全部步，只置初始步 S0.0
+	LD     Always_On
+	R      S0.0, 8
+Network 7 
+//置初始步
+	LD     Always_On
+	S      S0.0, 1
+Network 8 
+//使能诊断子程序（供 CRET 条件返回用）
+	LD     Always_On
+	S      V0.0, 1
+Network 9 
+//定时中断0 周期 = 100ms
+	LD     Always_On
+	MOVB   100, Time_0_Intrvl
+Network 10 
+//关联中断：事件0=I0.0上升沿，事件10=定时中断0，事件12=HSC0 CV=PV
+	LD     Always_On
+	ATCH   INT_0, 0
+	ATCH   INT_1, 10
+	ATCH   INT_2, 12
+Network 11 
+//PID0 回路表（VB1000 起 36 字节）：设定值与整定参数，归一化 0.0~1.0
+	LD     Always_On
+	MOVR   0.75, VD1004
+	MOVR   0.6, VD1012
+	MOVR   0.1, VD1016
+	MOVR   30.0, VD1020
+	MOVR   0.0, VD1024
+Network 12 
+//全局开中断
+	LD     Always_On
+	ENI
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 输入信号处理:SBR1
+TITLE=位逻辑全集 —— 触点/线圈、边沿、块操作、堆栈、立即指令
+BEGIN
+Network 1 
+//运行允许：急停未按下(I0.0常闭) 且 无急停标志 且 安全门关闭
+	LD     急停_常闭
+	AN     M3.0
+	A      安全门关闭
+	=      M0.0
+Network 2 
+//启保停自锁：启动 I0.1 / 停止 I0.2
+	LD     启动按钮
+	O      M0.1
+	AN     停止按钮
+	A      M0.0
+	=      M0.1
+Network 3 
+//上升沿 EU：复位按钮按下瞬间
+	LD     复位按钮
+	EU
+	=      M0.2
+Network 4 
+//下降沿 ED：复位按钮松开瞬间
+	LD     复位按钮
+	ED
+	=      M1.6
+Network 5 
+//取反 NOT：光电无遮挡
+	LD     工件检测光电
+	NOT
+	=      M0.3
+Network 6 
+//块与 ALD：(伸出到位 或 缩回到位) 且 (有料 或 安全门)
+	LD     气缸伸出到位
+	O      气缸缩回到位
+	LD     工件检测光电
+	O      安全门关闭
+	ALD
+	=      M0.4
+Network 7 
+//块或 OLD：(手动上料 且 手动加工) 或 (手动出料 且 报警确认)
+	LD     手动上料
+	A      手动加工
+	LD     手动出料
+	A      报警确认
+	OLD
+	=      M0.5
+Network 8 
+//堆栈 LPS/LRD/LPP：一个条件驱动多路输出
+	LD     M0.1
+	LPS
+	A      上料到位
+	=      M1.0
+	LRD
+	A      加工到位
+	=      M1.1
+	LPP
+	A      出料到位
+	=      M1.2
+Network 9 
+//置位 S：切到自动模式时置模式标志
+	LD     自动手动切换
+	EU
+	S      M1.3, 1
+Network 10 
+//复位 R：停止时清模式标志
+	LD     停止按钮
+	R      M1.3, 1
+Network 11 
+//立即触点 LDI/AI + 立即输出 =I：安全链不等扫描周期
+	LDI    急停_常闭
+	AI     安全门关闭
+	=I     安全链输出
+Network 12 
+//立即置位 SI：急停时立即鸣笛
+	LD     M3.0
+	SI     蜂鸣器, 1
+Network 13 
+//立即复位 RI：报警确认后停鸣
+	LD     报警确认
+	RI     蜂鸣器, 1
+Network 14 
+//工件到位脉冲：供计数器与移位寄存器使用
+	LD     工件检测光电
+	EU
+	=      M1.5
+Network 15 
+//取非触点串联 ON：任一到位信号丢失则置异常
+	LDN    上料到位
+	ON     加工到位
+	ON     出料到位
+	A      M0.1
+	=      M1.7
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 定时与计数:SBR2
+TITLE=定时器与计数器全集 —— TON/TOF/TONR、CTU/CTD/CTUD
+BEGIN
+Network 1 
+//接通延时 TON（100ms 基准，T37）
+	LD     M1.0
+	TON    T37, +50
+Network 2 
+//断开延时 TOF（100ms 基准，T38）
+	LD     M1.1
+	TOF    T38, +30
+Network 3 
+//保持型接通延时 TONR（100ms 基准，T5）—— 累计运行时间
+	LD     M0.1
+	TONR   T5, +1000
+Network 4 
+//1ms 分辨率定时器 T32，用于高速节拍
+	LD     M0.1
+	TON    T32, +500
+Network 5 
+//10ms 分辨率定时器 T33
+	LD     M1.2
+	TON    T33, +100
+Network 6 
+//定时到输出
+	LD     T37
+	=      M2.0
+Network 7 
+//TONR 需显式复位
+	LD     复位按钮
+	R      T5, 1
+Network 8 
+//加计数 CTU：CU=工件脉冲，R=复位按钮
+	LD     M1.5
+	LD     复位按钮
+	CTU    C0, +100
+Network 9 
+//减计数 CTD：CD=工件脉冲，LD=复位装入预置值
+	LD     M1.5
+	LD     复位按钮
+	CTD    C1, +50
+Network 10 
+//加减计数 CTUD：CU=进料脉冲，CD=出料脉冲，R=复位
+	LD     M1.5
+	LD     M0.3
+	LD     复位按钮
+	CTUD   C2, +200
+Network 11 
+//计数到位输出
+	LD     C0
+	=      M2.1
+Network 12 
+//满批复位计数器并累加批次
+	LD     C0
+	R      C0, 1
+	INCW   VW132
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 顺控主流程:SBR3
+TITLE=SCR 顺序控制 —— 7 步：初始/上料/夹紧/加工/松开/出料/完成
+BEGIN
+Network 1 
+//===== 步 S0.0 初始步：等待启动与来料 =====
+	LSCR   S0.0
+Network 2 
+//本步动作：复位全部执行机构输出
+	LD     Always_On
+	R      上料电机, 4
+Network 3 
+//就绪指示
+	LD     Always_On
+	=      就绪指示
+Network 4 
+//转移条件：已启动 且 检测到工件 → 上料步
+	LD     M0.1
+	A      工件检测光电
+	SCRT   S0.1
+Network 5 
+	SCRE
+Network 6 
+//===== 步 S0.1 上料步 =====
+	LSCR   S0.1
+Network 7 
+//上料电机运行
+	LD     Always_On
+	=      上料电机
+Network 8 
+//上料超时监视（参数 VW100）
+	LD     Always_On
+	TON    T40, +100
+Network 9 
+//转移条件：上料到位 → 夹紧步
+	LD     上料到位
+	SCRT   S0.2
+Network 10 
+//超时未到位 → 置上料故障
+	LD     T40
+	AN     上料到位
+	S      V600.2, 1
+Network 11 
+	SCRE
+Network 12 
+//===== 步 S0.2 夹紧步 =====
+	LSCR   S0.2
+Network 13 
+//夹紧气缸伸出（置位保持）
+	LD     Always_On
+	S      夹紧气缸, 1
+Network 14 
+//夹紧确认延时
+	LD     Always_On
+	TON    T41, +30
+Network 15 
+//转移条件：延时到 且 伸出到位 → 加工步
+	LD     T41
+	A      气缸伸出到位
+	SCRT   S0.3
+Network 16 
+	SCRE
+Network 17 
+//===== 步 S0.3 加工步 =====
+	LSCR   S0.3
+Network 18 
+//主轴启动
+	LD     Always_On
+	=      加工主轴
+Network 19 
+//加工计时
+	LD     Always_On
+	TON    T42, +200
+Network 20 
+//加工件数累加（上升沿只加一次）
+	LD     T42
+	EU
+	INCW   VW130
+Network 21 
+//转移条件：加工时间到 且 加工到位 → 松开步
+	LD     T42
+	A      加工到位
+	SCRT   S0.4
+Network 22 
+	SCRE
+Network 23 
+//===== 步 S0.4 松开步 =====
+	LSCR   S0.4
+Network 24 
+//气缸缩回
+	LD     Always_On
+	R      夹紧气缸, 1
+Network 25 
+//缩回确认延时
+	LD     Always_On
+	TON    T43, +30
+Network 26 
+//转移条件：缩回到位 → 出料步
+	LD     T43
+	A      气缸缩回到位
+	SCRT   S0.5
+Network 27 
+	SCRE
+Network 28 
+//===== 步 S0.5 出料步 =====
+	LSCR   S0.5
+Network 29 
+//出料电机运行
+	LD     Always_On
+	=      出料电机
+Network 30 
+//出料超时监视
+	LD     Always_On
+	TON    T44, +150
+Network 31 
+//转移条件：出料到位 → 完成步
+	LD     出料到位
+	SCRT   S0.6
+Network 32 
+//超时未到位 → 置出料故障
+	LD     T44
+	AN     出料到位
+	S      V600.3, 1
+Network 33 
+	SCRE
+Network 34 
+//===== 步 S0.6 完成步：产量累加后回初始步 =====
+	LSCR   S0.6
+Network 35 
+//总产量累加
+	LD     Always_On
+	INCD   VD140
+Network 36 
+//完成指示
+	LD     Always_On
+	=      完成指示
+Network 37 
+//节拍间隔
+	LD     Always_On
+	TON    T45, +20
+Network 38 
+//转移条件：间隔到 → 回初始步，形成循环
+	LD     T45
+	SCRT   S0.0
+Network 39 
+	SCRE
+Network 40 
+//===== 顺控段之外：停止或急停时强制回初始步 =====
+	LD     停止按钮
+	O      M3.0
+	R      S0.0, 8
+Network 41 
+//强制置初始步
+	LD     停止按钮
+	O      M3.0
+	S      S0.0, 1
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 手动操作:SBR4
+TITLE=手动模式 —— 各执行机构点动，带互锁
+BEGIN
+Network 1 
+//手动上料：与出料互锁
+	LD     手动上料
+	A      M0.0
+	AN     手动出料
+	=      上料电机
+Network 2 
+//手动加工：必须已夹紧
+	LD     手动加工
+	A      M0.0
+	A      气缸伸出到位
+	=      加工主轴
+Network 3 
+//手动出料：与上料互锁
+	LD     手动出料
+	A      M0.0
+	AN     手动上料
+	=      出料电机
+Network 4 
+//手动夹紧/松开：按钮切换（上升沿翻转）
+	LD     上料到位
+	EU
+	A      M0.0
+	S      夹紧气缸, 1
+Network 5 
+	LD     加工到位
+	EU
+	R      夹紧气缸, 1
+Network 6 
+//手动模式指示灯闪烁
+	LD     Clock_1s
+	A      M0.0
+	=      手动模式指示
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 模拟量处理:SBR5
+TITLE=模拟量采集与实数运算 —— 标定、限幅、开方、三角函数、偏差
+BEGIN
+Network 1 
+//读两路模拟量输入
+	LD     Always_On
+	MOVW   AIW16, VW200
+	MOVW   AIW18, VW202
+Network 2 
+//整数→双整数→实数
+	LD     Always_On
+	ITD    VW200, VD204
+	DTR    VD204, VD208
+Network 3 
+//工程量标定：(AI-6400)/25600*100
+	LD     Always_On
+	MOVR   VD208, VD212
+	-R     6400.0, VD212
+	/R     25600.0, VD212
+	*R     100.0, VD212
+Network 4 
+//上限限幅
+	LDR>   VD212, 100.0
+	MOVR   100.0, VD212
+Network 5 
+//下限限幅
+	LDR<   VD212, 0.0
+	MOVR   0.0, VD212
+Network 6 
+//开方 SQRT：差压流量计开方运算
+	LD     Always_On
+	SQRT   VD212, VD216
+Network 7 
+//自然对数 LN 与指数 EXP
+	LD     Always_On
+	LN     VD216, VD220
+	EXP    VD220, VD224
+Network 8 
+//角度转弧度后取三角函数
+	LD     Always_On
+	MOVR   VD212, VD228
+	*R     0.0174533, VD228
+	SIN    VD228, VD232
+	COS    VD228, VD236
+	TAN    VD228, VD240
+Network 9 
+//实数→双整数：四舍五入 ROUND 与截尾 TRUNC
+	LD     Always_On
+	ROUND  VD212, VD244
+	TRUNC  VD212, VD248
+Network 10 
+//双整数→整数后送模拟量输出
+	LD     Always_On
+	DTI    VD244, VW252
+	MOVW   VW252, AQW16
+Network 11 
+//偏差 = 设定值 - 测量值
+	LD     Always_On
+	MOVR   VD256, VD260
+	-R     VD212, VD260
+Network 12 
+//偏差取绝对值
+	LDR<   VD260, 0.0
+	*R     -1.0, VD260
+Network 13 
+//超差报警
+	LDR>   VD260, 5.0
+	S      V600.4, 1
+Network 14 
+//偏差回落则清报警
+	LDR<=  VD260, 5.0
+	R      V600.4, 1
+Network 15 
+//滑动平均值（由 100ms 中断计算）折算为工程量
+	LD     Always_On
+	DTR    VD924, VD268
+	-R     6400.0, VD268
+	/R     256.0, VD268
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 数学与逻辑:SBR6
+TITLE=运算指令全集 —— 四则、增减、字节/字/双字逻辑、移位与循环移位
+BEGIN
+Network 1 
+//整数四则 +I -I *I /I
+	LD     Always_On
+	MOVW   VW300, VW302
+	+I     +100, VW302
+	-I     +50, VW302
+	*I     +2, VW302
+	/I     +3, VW302
+Network 2 
+//双整数四则 +D -D *D /D
+	LD     Always_On
+	MOVD   VD304, VD308
+	+D     +1000, VD308
+	-D     +200, VD308
+	*D     +3, VD308
+	/D     +7, VD308
+Network 3 
+//整数相乘得双整数 MUL
+	LD     Always_On
+	MOVW   VW312, VW318
+	MUL    +100, VD316
+Network 4 
+//整数相除得商与余数 DIV
+	LD     Always_On
+	MOVW   VW320, VW326
+	DIV    +7, VD324
+Network 5 
+//实数四则 +R -R *R /R
+	LD     Always_On
+	MOVR   VD330, VD334
+	+R     1.5, VD334
+	-R     0.5, VD334
+	*R     2.0, VD334
+	/R     4.0, VD334
+Network 6 
+//加一：INCB / INCW / INCD
+	LD     Always_On
+	INCB   VB340
+	INCW   VW342
+	INCD   VD344
+Network 7 
+//减一：DECB / DECW / DECD
+	LD     Always_On
+	DECB   VB348
+	DECW   VW350
+	DECD   VD352
+Network 8 
+//字节逻辑 ANDB ORB XORB INVB
+	LD     Always_On
+	ANDB   16#0F, VB360
+	ORB    16#F0, VB360
+	XORB   16#FF, VB360
+	INVB   VB360
+Network 9 
+//字逻辑 ANDW ORW XORW INVW
+	LD     Always_On
+	ANDW   16#FF, VW362
+	ORW    16#FF00, VW362
+	XORW   16#FFFF, VW362
+	INVW   VW362
+Network 10 
+//双字逻辑 ANDD ORD XORD INVD
+	LD     Always_On
+	ANDD   16#FFFF, VD364
+	ORD    16#FFFF0000, VD364
+	XORD   16#FFFFFFFF, VD364
+	INVD   VD364
+Network 11 
+//移位 SLB/SRB SLW/SRW SLD/SRD
+	LD     Always_On
+	SLB    VB368, 2
+	SRB    VB369, 1
+	SLW    VW370, 4
+	SRW    VW372, 2
+	SLD    VD374, 8
+	SRD    VD378, 4
+Network 12 
+//循环移位 RLB/RRB RLW/RRW RLD/RRD
+	LD     Always_On
+	RLB    VB382, 1
+	RRB    VB383, 1
+	RLW    VW384, 2
+	RRW    VW386, 2
+	RLD    VD388, 4
+	RRD    VD392, 4
+Network 13 
+//移位寄存器 SHRB：输送线工件位置跟踪（16 位）
+	LD     M1.5
+	SHRB   M0.3, V396.0, +16
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 数据处理:SBR7
+TITLE=传送/块操作/表格/码制转换/字符串
+BEGIN
+Network 1 
+//单点传送 MOVB / MOVW / MOVD / MOVR
+	LD     Always_On
+	MOVB   VB400, VB401
+	MOVW   VW402, VW404
+	MOVD   VD406, VD410
+	MOVR   VD414, VD418
+Network 2 
+//块传送 BMB / BMW / BMD —— 配方成组搬运
+	LD     Always_On
+	BMB    VB420, VB440, 16
+	BMW    VW460, VW480, 8
+	BMD    VD500, VD520, 4
+Network 3 
+//字节交换 SWAP：大小端转换
+	LD     Always_On
+	SWAP   VW540
+Network 4 
+//存储器填充 FILL：清一片字区
+	LD     复位按钮
+	FILL   +0, VW550, 10
+Network 5 
+//表格：ATT 把当前产量加入表尾
+	LD     M1.5
+	ATT    VW130, VW560
+Network 6 
+//表格：FIFO 先进先出取数
+	LD     手动上料
+	FIFO   VW560, VW600
+Network 7 
+//表格：LIFO 后进先出取数
+	LD     手动加工
+	LIFO   VW560, VW602
+Network 8 
+//BCD 与整数互转（拨码盘/数码管）
+	LD     Always_On
+	BCDI   VW606
+	IBCD   VW608
+Network 9 
+//字节←→整数 BTI / ITB
+	LD     Always_On
+	BTI    VB610, VW612
+	ITB    VW612, VB614
+Network 10 
+//整数←→双整数 ITD / DTI
+	LD     Always_On
+	ITD    VW616, VD618
+	DTI    VD618, VW622
+Network 11 
+//双整数←→实数 DTR / ROUND
+	LD     Always_On
+	DTR    VD624, VD628
+	ROUND  VD628, VD632
+Network 12 
+//ASCII←→十六进制 ATH / HTA
+	LD     Always_On
+	ATH    VB640, VB650, 8
+	HTA    VB650, VB660, 4
+Network 13 
+//七段码 SEG：驱动数码管
+	LD     Always_On
+	SEG    VB700, VB701
+Network 14 
+//立即读物理输入字节 BIR
+	LD     Always_On
+	BIR    IB1, VB710
+Network 15 
+//立即写物理输出字节 BIW —— 仅强制输出测试模式用（M3.6 平时不置位）
+	LD     M3.6
+	BIW    VB711, QB1
+Network 16 
+//整数转 ASCII 字符串 ITA（送 HMI / 串口显示）
+	LD     Always_On
+	ITA    VW130, VB672, 16#0B
+Network 17 
+//双整数转 ASCII 字符串 DTA
+	LD     Always_On
+	DTA    VD140, VB684, 16#0B
+Network 18 
+//实数转 ASCII 字符串 RTA
+	LD     Always_On
+	RTA    VD212, VB694, 16#0B
+Network 19 
+//译码 DECO：把数值转成对应位置1（步序→指示灯字）
+	LD     Always_On
+	DECO   VB702, VW704
+Network 20 
+//编码 ENCO：找出最低置位位的位号（报警字→报警号）
+	LD     Always_On
+	ENCO   VW600, VB708
+Network 21 
+//表格查找 FND=：在产量表里找等于设定值的记录
+	LD     手动出料
+	FND=   VW560, +100, VW604
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 报警与诊断:SBR8
+TITLE=比较指令全集 + 跳转 JMP/LBL + 循环 FOR/NEXT + 条件返回 CRET
+BEGIN
+Network 1 
+//诊断未使能则条件返回 CRET
+	LDN    V0.0
+	CRET
+Network 2 
+//字节比较：报警字为零 = 无报警
+	LDB=   VB600, 16#0
+	=      M2.3
+Network 3 
+//字节比较：不等于
+	LDB<>  VB600, 16#0
+	=      M2.4
+Network 4 
+//整数比较：大于
+	LDW>   VW130, +1000
+	=      M2.5
+Network 5 
+//整数比较：大于等于
+	LDW>=  VW130, +500
+	=      M2.6
+Network 6 
+//整数比较：小于
+	LDW<   VW130, +10
+	=      M2.7
+Network 7 
+//整数比较：小于等于
+	LDW<=  VW130, +5
+	=      M3.2
+Network 8 
+//双整数比较：大于
+	LDD>   VD140, +10000
+	=      M3.3
+Network 9 
+//双整数比较：等于
+	LDD=   VD140, +0
+	=      M3.4
+Network 10 
+//实数比较：上限
+	LDR>=  VD212, 80.0
+	S      V600.0, 1
+Network 11 
+//实数比较：下限
+	LDR<   VD212, 20.0
+	S      V600.1, 1
+Network 12 
+//超限持续 5s 才确认为报警（防抖）
+	LD     V600.0
+	TON    T50, +50
+Network 13 
+//确认后置硬报警位
+	LD     T50
+	S      V601.0, 1
+Network 14 
+//报警汇总驱动报警指示
+	LD     V600.0
+	O      V600.1
+	O      V601.0
+	O      M3.0
+	=      报警指示
+Network 15 
+//报警确认：清报警字并清急停标志
+	LD     报警确认
+	EU
+	FILL   +0, VW600, 4
+Network 16 
+	LD     报警确认
+	EU
+	R      M3.0, 1
+Network 17 
+//无报警时跳过统计段
+	LDB=   VB600, 16#0
+	JMP    1
+Network 18 
+//FOR 循环：扫描报警字 8 个位做次数统计
+	LD     Always_On
+	FOR    VW610, +1, +8
+Network 19 
+//循环体
+	LD     Always_On
+	INCW   VW612
+Network 20 
+	NEXT
+Network 21 
+//跳转标号
+	LBL    1
+Network 22 
+//长扫描后喂看门狗
+	LD     Always_On
+	WDR
+Network 23 
+//严重故障停机（M3.5 由上位机置位，正常不动作）
+	LD     M3.5
+	A      M3.0
+	STOP
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 通信处理:SBR9
+TITLE=自由口收发 XMT/RCV 与 S7 网络读写 NETR/NETW
+BEGIN
+Network 1 
+//端口0 自由口模式：9600,8,N,1
+	LD     First_Scan_On
+	MOVB   16#09, P0_Config
+Network 2 
+//发送缓冲区：首字节为长度，其后为报文
+	LD     Always_On
+	MOVB   6, VB700
+	MOVB   16#53, VB701
+	MOVB   16#54, VB702
+	MOVB   16#41, VB703
+	MOVB   16#52, VB704
+	MOVB   16#54, VB705
+	MOVB   16#0A, VB706
+Network 3 
+//把当前产量填进报文数据区
+	LD     Always_On
+	MOVW   VW130, VW707
+	MOVD   VD140, VD709
+Network 4 
+//周期发送 XMT（端口0）
+	LD     M2.0
+	EU
+	XMT    VB700, 0
+Network 5 
+//接收控制：起始字符检测 + 结束字符 + 超时
+	LD     First_Scan_On
+	MOVB   16#B0, P0_Ctrl_Rcv
+	MOVB   16#02, P0_Start_Char
+	MOVB   16#0A, P0_End_Char
+	MOVW   +100, P0_Idle_Time
+	MOVW   +50, P0_Timeout
+	MOVB   20, P0_Max_Char
+Network 6 
+//启动接收 RCV（端口0）
+	LD     First_Scan_On
+	RCV    VB750, 0
+Network 7 
+//关联接收完成中断（事件23）
+	LD     First_Scan_On
+	ATCH   INT_3, 23
+Network 8 
+//以太网 S7 通信：GET 读远程站数据（表首地址 VB780）
+//注意 S7-200 SMART 用 GET/PUT，没有 S7-200 的 NETR/NETW
+	LD     M2.1
+	GET    VB780
+Network 9 
+//以太网 S7 通信：PUT 把本站产量写到远程站（表首地址 VB800）
+	LD     M2.1
+	PUT    VB800
+Network 10 
+//通信超时监视
+	LDW>   VW904, +0
+	TON    T51, +100
+Network 11 
+//超时置通信故障
+	LD     T51
+	S      V600.5, 1
+Network 12 
+//读取本站通信地址 GPA（GET_ADDR，端口0）
+	LD     First_Scan_On
+	GPA    VB820, 0
+Network 13 
+//设置本站通信地址 SPA（SET_ADDR）—— 仅调试时由 M3.4 触发
+	LD     M3.4
+	EU
+	SPA    2, 0
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 高速与脉冲:SBR10
+TITLE=高速计数 HDEF/HSC 与脉冲输出 PLS（PTO/PWM）
+BEGIN
+Network 1 
+//HSC0 控制字节：允许、更新初值与预置值、增计数、4倍频
+	LD     First_Scan_On
+	MOVB   16#F8, HSC0_Ctrl
+	MOVD   +0, HSC0_CV
+	MOVD   +1000, HSC0_PV
+Network 2 
+//定义高速计数器模式：HSC0，模式0（单路增计数，内部方向）
+	LD     First_Scan_On
+	HDEF   0, 0
+Network 3 
+//启动 HSC0
+	LD     First_Scan_On
+	HSC    0
+Network 4 
+//读取当前计数值
+	LD     Always_On
+	MOVD   HC0, VD850
+Network 5 
+//PTO 通道0（Q0.0）：允许、选择 PTO、更新周期与脉冲数、单段
+	LD     First_Scan_On
+	MOVB   16#85, PLS0_Ctrl
+	MOVW   +500, PLS0_Cycle
+	MOVD   +10000, PTO0_PC
+Network 6 
+//启动脉冲串输出 PLS 0
+	LD     M3.6
+	EU
+	PLS    0
+Network 7 
+//PWM 通道1（Q0.1）：允许、选择 PWM、更新周期与脉宽、时基us
+	LD     First_Scan_On
+	MOVB   16#DB, PLS1_Ctrl
+	MOVW   +1000, PLS1_Cycle
+	MOVW   +500, PWM1_PW
+Network 8 
+//启动 PWM 输出 PLS 1
+	LD     Always_On
+	PLS    1
+Network 9 
+//复位高速计数器当前值
+	LD     复位按钮
+	MOVB   16#C0, HSC0_Ctrl
+	MOVD   +0, HSC0_CV
+Network 10 
+//脉冲数换算为转速（脉冲/圈=1000，折算 r/min）
+	LD     Always_On
+	MOVD   VD850, VD854
+	*D     +60, VD854
+	/D     +1000, VD854
+Network 11 
+//到达预置长度标志（由 INT_2 置位）清除
+	LD     复位按钮
+	R      M3.1, 1
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 时钟与统计:SBR11
+TITLE=实时时钟 TODR/TODW 与运行统计
+BEGIN
+Network 1 
+//读实时时钟到 VB860 起 8 字节（年月日时分秒星期）
+	LD     Always_On
+	TODR   VB860
+Network 2 
+//校时：由上位机写入 VB870 起 8 字节后触发
+	LD     M3.7
+	EU
+	TODW   VB870
+Network 3 
+//运行秒计（仅运行中累加）
+	LD     Clock_1s
+	EU
+	A      M0.1
+	INCD   VD880
+Network 4 
+//满 3600s 进位为小时并清秒
+	LDD>=  VD880, +3600
+	INCD   VD884
+	MOVD   +0, VD880
+Network 5 
+//累计 2000 小时提示保养
+	LDD>=  VD884, +2000
+	S      V602.0, 1
+Network 6 
+//整点（分=0）锁存班次产量
+	LDB=   VB864, 16#0
+	MOVD   VD140, VD888
+Network 7 
+//整点清当班产量
+	LDB=   VB864, 16#0
+	MOVD   +0, VD140
+Network 8 
+//时钟数据打包送 HMI 显示区
+	LD     Always_On
+	BMB    VB860, VB890, 8
+Network 9 
+//平均节拍 = 运行秒 / 产量
+	LDD>   VD888, +0
+	MOVD   VD880, VD894
+	/D     VD888, VD894
+Network 10 
+//扩展读时钟 TODRX：带夏令时信息的 19 字节缓冲区
+	LD     Always_On
+	TODRX  VB1200
+Network 11 
+//扩展写时钟 TODWX：由上位机下发后校时
+	LD     M3.7
+	ED
+	TODWX  VB1220
+END_SUBROUTINE_BLOCK
+
+SUBROUTINE_BLOCK 字符串处理:SBR12
+TITLE=字符串指令 —— 报文与提示文本拼装
+BEGIN
+Network 1 
+//求字符串长度 SLEN
+	LD     Always_On
+	SLEN   VB1100, VB1150
+Network 2 
+//复制字符串 SCPY：设备名 → 输出缓冲
+	LD     Always_On
+	SCPY   VB1100, VB1160
+Network 3 
+//连接字符串 SCAT：把报警文本接到设备名后面
+	LD     Always_On
+	SCAT   VB1120, VB1160
+Network 4 
+//复制子串 SSCPY：从第 1 个字符起取 4 个（取设备编号）
+	LD     Always_On
+	SSCPY  VB1100, 1, 4, VB1180
+Network 5 
+//在字符串中查找子串 SFND：返回起始位置，0 表示没找到
+	LD     Always_On
+	SFND   VB1100, VB1120, VB1190
+Network 6 
+//在字符串中查找单个字符 CFND
+	LD     Always_On
+	CFND   VB1100, VB1121, VB1191
+Network 7 
+//没找到关键字时置提示位
+	LDB=   VB1190, 16#0
+	S      V602.1, 1
+END_SUBROUTINE_BLOCK
+
+INTERRUPT_BLOCK INT_0:INT0
+TITLE=急停中断 —— 事件0（I0.0 上升沿）
+BEGIN
+Network 1 
+//立即封锁全部输出，不等扫描周期结束
+	LD     Always_On
+	RI     PTO脉冲输出, 8
+Network 2 
+//立即封锁 Q1 组
+	LD     Always_On
+	RI     安全链输出, 8
+Network 3 
+//置急停标志并累计急停次数
+	LD     Always_On
+	S      M3.0, 1
+	INCD   VD900
+END_INTERRUPT_BLOCK
+
+INTERRUPT_BLOCK INT_1:INT1
+TITLE=定时中断0 —— 100ms 周期采样与计时
+BEGIN
+Network 1 
+//急停时直接返回，不做采样（条件返回 CRETI）
+	LD     M3.0
+	CRETI
+Network 2 
+//采样累加，为滑动平均做准备
+	LD     Always_On
+	MOVW   AIW16, VW910
+	ITD    VW910, VD912
+	+D     VD912, VD916
+	INCW   VW920
+Network 3 
+//满 10 次求平均并清累加器
+	LDW>=  VW920, +10
+	MOVD   VD916, VD924
+	/D     +10, VD924
+	MOVD   +0, VD916
+	MOVW   +0, VW920
+Network 4 
+//中断内 100ms 节拍累计
+	LD     Always_On
+	INCD   VD928
+Network 5 
+//过程变量归一化到 0.0~1.0 送 PID 回路表 PV 位（VD1000）
+	LD     Always_On
+	ITD    VW200, VD1044
+	DTR    VD1044, VD1000
+	/R     32000.0, VD1000
+Network 6 
+//PID 回路运算 —— 回路表 VB1000，回路号 0
+	LD     Always_On
+	PID    VB1000, 0
+Network 7 
+//输出反归一化：0.0~1.0 → 0~32000，接调节阀时把 VW1040 送 AQW16
+	LD     Always_On
+	MOVR   VD1008, VD1036
+	*R     32000.0, VD1036
+	ROUND  VD1036, VD1040
+	DTI    VD1040, VW1044
+END_INTERRUPT_BLOCK
+
+INTERRUPT_BLOCK INT_2:INT2
+TITLE=高速计数中断 —— 事件12（HSC0 当前值=预置值）
+BEGIN
+Network 1 
+//到达预置长度：置到位标志并累计
+	LD     Always_On
+	S      M3.1, 1
+	INCD   VD932
+Network 2 
+//重装初值与控制字节（仅更新当前值）
+	LD     Always_On
+	MOVD   +0, HSC0_CV
+	MOVB   16#C0, HSC0_Ctrl
+Network 3 
+//重新使能 HSC0
+	LD     Always_On
+	HSC    0
+END_INTERRUPT_BLOCK
+
+INTERRUPT_BLOCK INT_3:INT3
+TITLE=自由口接收完成中断 —— 事件23（端口0 接收完成）
+BEGIN
+Network 1 
+//接收帧计数
+	LD     Always_On
+	INCW   VW904
+Network 2 
+//SMB86=16#20 表示收到结束字符，正常帧
+	LDB=   P0_Stat_Rcv, 16#20
+	MOVB   1, VB906
+Network 3 
+//重新启动接收，形成连续收发
+	LD     Always_On
+	RCV    VB750, 0
+END_INTERRUPT_BLOCK
+

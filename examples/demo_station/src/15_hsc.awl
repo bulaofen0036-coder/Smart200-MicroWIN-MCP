@@ -1,0 +1,58 @@
+SUBROUTINE_BLOCK 高速与脉冲:SBR10
+TITLE=高速计数 HDEF/HSC 与脉冲输出 PLS（PTO/PWM）
+BEGIN
+Network 1
+//HSC0 控制字节：允许、更新初值与预置值、增计数、4倍频
+	LD     SM0.1
+	MOVB   16#F8, SMB37
+	MOVD   +0, SMD38
+	MOVD   +1000, SMD42
+Network 2
+//定义高速计数器模式：HSC0，模式0（单路增计数，内部方向）
+	LD     SM0.1
+	HDEF   0, 0
+Network 3
+//启动 HSC0
+	LD     SM0.1
+	HSC    0
+Network 4
+//读取当前计数值
+	LD     SM0.0
+	MOVD   HC0, VD850
+Network 5
+//PTO 通道0（Q0.0）：允许、选择 PTO、更新周期与脉冲数、单段
+	LD     SM0.1
+	MOVB   16#85, SMB67
+	MOVW   +500, SMW68
+	MOVD   +10000, SMD72
+Network 6
+//启动脉冲串输出 PLS 0
+	LD     M3.6
+	EU
+	PLS    0
+Network 7
+//PWM 通道1（Q0.1）：允许、选择 PWM、更新周期与脉宽、时基us
+	LD     SM0.1
+	MOVB   16#DB, SMB77
+	MOVW   +1000, SMW78
+	MOVW   +500, SMW80
+Network 8
+//启动 PWM 输出 PLS 1
+	LD     SM0.0
+	PLS    1
+Network 9
+//复位高速计数器当前值
+	LD     I0.4
+	MOVB   16#C0, SMB37
+	MOVD   +0, SMD38
+Network 10
+//脉冲数换算为转速（脉冲/圈=1000，折算 r/min）
+	LD     SM0.0
+	MOVD   VD850, VD854
+	*D     +60, VD854
+	/D     +1000, VD854
+Network 11
+//到达预置长度标志（由 INT_2 置位）清除
+	LD     I0.4
+	R      M3.1, 1
+END_SUBROUTINE_BLOCK

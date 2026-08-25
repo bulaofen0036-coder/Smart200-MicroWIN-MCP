@@ -1,0 +1,79 @@
+SUBROUTINE_BLOCK 模拟量处理:SBR5
+TITLE=模拟量采集与实数运算 —— 标定、限幅、开方、三角函数、偏差
+BEGIN
+Network 1
+//读两路模拟量输入
+	LD     SM0.0
+	MOVW   AIW16, VW200
+	MOVW   AIW18, VW202
+Network 2
+//整数→双整数→实数
+	LD     SM0.0
+	ITD    VW200, VD204
+	DTR    VD204, VD208
+Network 3
+//工程量标定：(AI-6400)/25600*100
+	LD     SM0.0
+	MOVR   VD208, VD212
+	-R     6400.0, VD212
+	/R     25600.0, VD212
+	*R     100.0, VD212
+Network 4
+//上限限幅
+	LDR>   VD212, 100.0
+	MOVR   100.0, VD212
+Network 5
+//下限限幅
+	LDR<   VD212, 0.0
+	MOVR   0.0, VD212
+Network 6
+//开方 SQRT：差压流量计开方运算
+	LD     SM0.0
+	SQRT   VD212, VD216
+Network 7
+//自然对数 LN 与指数 EXP
+	LD     SM0.0
+	LN     VD216, VD220
+	EXP    VD220, VD224
+Network 8
+//角度转弧度后取三角函数
+	LD     SM0.0
+	MOVR   VD212, VD228
+	*R     0.0174533, VD228
+	SIN    VD228, VD232
+	COS    VD228, VD236
+	TAN    VD228, VD240
+Network 9
+//实数→双整数：四舍五入 ROUND 与截尾 TRUNC
+	LD     SM0.0
+	ROUND  VD212, VD244
+	TRUNC  VD212, VD248
+Network 10
+//双整数→整数后送模拟量输出
+	LD     SM0.0
+	DTI    VD244, VW252
+	MOVW   VW252, AQW16
+Network 11
+//偏差 = 设定值 - 测量值
+	LD     SM0.0
+	MOVR   VD256, VD260
+	-R     VD212, VD260
+Network 12
+//偏差取绝对值
+	LDR<   VD260, 0.0
+	*R     -1.0, VD260
+Network 13
+//超差报警
+	LDR>   VD260, 5.0
+	S      V600.4, 1
+Network 14
+//偏差回落则清报警
+	LDR<=  VD260, 5.0
+	R      V600.4, 1
+Network 15
+//滑动平均值（由 100ms 中断计算）折算为工程量
+	LD     SM0.0
+	DTR    VD924, VD268
+	-R     6400.0, VD268
+	/R     256.0, VD268
+END_SUBROUTINE_BLOCK

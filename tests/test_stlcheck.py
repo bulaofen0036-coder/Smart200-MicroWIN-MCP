@@ -52,6 +52,9 @@ bad_cases = {
     "两条rung塞一个网络": net("LD     I0.0", "=      Q0.0", "LD     I0.1", "=      Q0.1"),
     "FOR与NEXT同段": net("LD     SM0.0", "FOR    VW0, +1, +5", "INCB   VB0", "NEXT"),
     "定时器后接输出": net("LD     I0.0", "TON    T37, +100", "LD     T37", "=      Q0.0"),
+    # SMART 不支持的助记符：软件当成未定义符号 → 整网无效（引擎实测 2026-08-25）
+    "NETR不存在": net("LD     M2.1", "NETR   VB780, 0"),
+    "NETW不存在": net("LD     M2.1", "NETW   VB800, 0"),
 }
 for name, body in bad_cases.items():
     check("哨兵抓到 " + name, not stlcheck.check(wrap(body))["valid"])
@@ -62,6 +65,16 @@ good_cases = {
     "OLD块或": net("LD     I0.0", "A      I0.1", "LD     I0.2", "A      I0.3", "OLD", "=      Q0.0"),
     "LPS多输出": net("LD     I0.0", "LPS", "A      I0.1", "=      Q0.0", "LPP", "A      I0.2", "=      Q0.1"),
     "NEXT独立段": net("NEXT"),
+    # SCR 顺控：LSCR/SCRE 是无左母线触点的独立框，单独成网络就是正确形态
+    # （引擎 POU_IsValidNet 对 8 网络的 SCR 块判定 invalid=0，见 2026-08-25 探针）
+    "LSCR独立段": net("LSCR   S0.0"),
+    "SCRE独立段": net("SCRE"),
+    "SCRT带条件": net("LD     I0.1", "SCRT   S0.1"),
+    # 这些曾被怀疑不支持，引擎实测全部有效 —— 黑名单不能凭印象扩大
+    "GET支持": net("LD     M2.1", "GET    VB780"),
+    "PUT支持": net("LD     M2.1", "PUT    VB800"),
+    "字符串指令支持": net("LD     SM0.0", "SLEN   VB720, VB750", "SCAT   VB740, VB760"),
+    "扩展时钟支持": net("LD     SM0.0", "TODRX  VB900"),
 }
 for name, body in good_cases.items():
     check("正确放行 " + name, stlcheck.check(wrap(body))["valid"])
