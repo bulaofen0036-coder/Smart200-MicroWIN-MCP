@@ -89,17 +89,63 @@ def _section(text, name):
     return "\n".join(lines[start:end])
 
 
-def _ops(text):
+def _ops(text, dedup=True):
+    """抽助记符。dedup=True 只留种类；False 返回完整指令流（按顺序、不去重）。
+
+    第4关往返核对要用 dedup=False：只比对"种类集合"的话，
+    同一助记符少了几条是看不出来的（源里 20 条 MOVW、回来只剩 3 条也算过），
+    而这正是"被软件静默丢弃"最可能的形态。
+    """
     out = []
     for line in text.replace("\r\n", "\n").split("\n"):
-        m = re.match(r"\t([A-Z][A-Z0-9_=<>+\-*/.]*)", line)
-        if m and m.group(1) not in out:
-            out.append(m.group(1))
+        # 首字符必须允许 = 和 + - * /：输出线圈是 "="、立即输出 "=I"，
+        # 算术指令是 "+I" "-D" "*R" "/D" 这一族。只写 [A-Z] 会把它们【整族漏掉】，
+        # 往返核对就等于从没检查过线圈和四则运算（2026-08-25 被单测抓出来）。
+        m = re.match(r"\t([A-Z=+\-*/][A-Z0-9_=<>+\-*/.]*)", line)
+        if not m:
+            continue
+        if dedup and m.group(1) in out:
+            continue
+        out.append(m.group(1))
     return out
 
 
 def _net_count(text):
     return len(re.findall(r"^Network\s+\d+", text.replace("\r\n", "\n"), re.M))
+
+
+def compare_roundtrip(src_text, back_text):
+    """第4关的判据：源块文本 vs 从工程导出回来的同一块，逐条核对。
+
+    单独成函数是为了能脱离 MicroWIN 直接测 —— 凡是"拿输出下结论"的代码
+    都要可单测，否则判据写错了没人发现（enginelog 的引号 bug 就是这么活很久的）。
+
+    返回 (是否一致, 明细dict)。比对的是【完整指令流】而不是助记符种类集合：
+    只比种类的话，源里 20 条 MOVW、回来只剩 3 条也算过 ——
+    而"被软件静默丢弃几条"正是最需要抓的形态。
+    """
+    src_stream = _ops(src_text, dedup=False)
+    back_stream = _ops(back_text, dedup=False)
+    n_src, n_back = _net_count(src_text), _net_count(back_text)
+    entry = {"instructions_src": len(src_stream),
+             "instructions_back": len(back_stream),
+             "missing_kinds": [o for o in _ops(src_text)
+                               if o not in set(back_stream)],
+             "networks_src": n_src, "networks_back": n_back}
+    if n_src != n_back:
+        entry["error"] = "网络数对不上：源 %d 段，回来 %d 段" % (n_src, n_back)
+        return False, entry
+    if src_stream != back_stream:
+        # 指出第一条分歧在哪，便于直接定位，不用人肉 diff
+        i = next((k for k, (a, b) in enumerate(zip(src_stream, back_stream))
+                  if a != b), min(len(src_stream), len(back_stream)))
+        entry["error"] = (
+            "指令流对不上：源 %d 条、回来 %d 条，第 %d 条起分歧（源 %s，回来 %s）"
+            % (len(src_stream), len(back_stream), i + 1,
+               src_stream[i:i + 3] or "(没有了)",
+               back_stream[i:i + 3] or "(没有了)"))
+        return False, entry
+    return True, entry
 
 
 def _read(path):
@@ -378,17 +424,10 @@ def deploy(awl_files, project_path=None, template=None, open_after=False,
             rt[name] = {"error": "导出文件里找不到块 %r —— 块没真正建立" % name}
             all_ok = False
             continue
-        src_ops = _ops(src_text)
-        back_ops = set(_ops(back_text))
-        missing = [o for o in src_ops if o not in back_ops]
-        n_src, n_back = _net_count(src_text), _net_count(back_text)
-        entry = {"instructions": len(src_ops), "missing": missing,
-                 "networks_src": n_src, "networks_back": n_back,
-                 "exported_bytes": os.path.getsize(dst)}
-        if missing or n_src != n_back:
+        ok_rt, entry = compare_roundtrip(src_text, back_text)
+        entry["exported_bytes"] = os.path.getsize(dst)
+        if not ok_rt:
             all_ok = False
-            if n_src != n_back:
-                entry["error"] = "网络数对不上：源 %d 段，回来 %d 段" % (n_src, n_back)
         rt[name] = entry
     report["stage4_roundtrip"] = "PASS" if all_ok else "FAIL"
     report["detail"]["roundtrip"] = rt

@@ -63,6 +63,44 @@ check("没见过的助记符不误杀", stlcheck.check(net("LD     M0.0", "MOVB 
 check("黑名单只收实测过的两条", set(stlcheck._NOT_IN_SMART) == {"NETR", "NETW"},
       sorted(stlcheck._NOT_IN_SMART))
 
+print("=== 第4关往返判据（compare_roundtrip，可脱机单测）===")
+
+
+def blk(*ops, nets=1):
+    L = ["SUBROUTINE_BLOCK T:SBR0", "TITLE=", "BEGIN"]
+    per = max(1, len(ops) // nets) if nets else len(ops)
+    i = 0
+    for n in range(nets):
+        L.append("Network %d" % (n + 1))
+        chunk = ops[i:i + per] if n < nets - 1 else ops[i:]
+        i += per
+        L += ["	" + o for o in chunk]
+    L.append("END_SUBROUTINE_BLOCK")
+    return chr(10).join(L)
+
+
+same = blk("LD     I0.0", "MOVW   VW1, VW2", "MOVW   VW3, VW4", "=      Q0.0")
+ok, e = autoflow.compare_roundtrip(same, same)
+check("完全相同判为一致", ok, e)
+check("指令条数按流计不按种类", e["instructions_src"] == 4, e)
+
+# 反向哨兵：同一助记符少了一条 —— 只比"种类集合"的旧判据抓不到这个
+less = blk("LD     I0.0", "MOVW   VW1, VW2", "=      Q0.0")
+ok2, e2 = autoflow.compare_roundtrip(same, less)
+check("少了一条同类指令要被抓", not ok2, e2)
+check("旧判据抓不到的正是这种", set(autoflow._ops(same)) == set(autoflow._ops(less)))
+check("报错指出第几条起分歧", "第 3 条起分歧" in e2.get("error", ""), e2.get("error"))
+
+# 反向哨兵：网络数对不上
+ok3, e3 = autoflow.compare_roundtrip(blk("LD     I0.0", "=      Q0.0", nets=2), same)
+check("网络数对不上要被抓", not ok3, e3)
+check("网络数报错说清两边段数", "网络数对不上" in e3.get("error", ""), e3.get("error"))
+
+# 反向哨兵：整类指令消失
+gone = blk("LD     I0.0", "LD     I0.1", "LD     I0.2", "LD     I0.3")
+ok4, e4 = autoflow.compare_roundtrip(same, gone)
+check("整类指令消失要被抓", not ok4 and "MOVW" in e4["missing_kinds"], e4)
+
 print("")
 print("全部通过" if not fails else str(len(fails)) + " 项失败: " + str(fails))
 sys.exit(1 if fails else 0)
